@@ -1,0 +1,4 @@
+<resources>
+    <!-- Compose 단일 Activity. 기사 앱은 다크 모드 고정이라 시스템 다크 테마를 부모로 둔다 -->
+    <style name="Theme.MoyeotaDriver" parent="android:Theme.Material.NoActionBar" />
+</resources>

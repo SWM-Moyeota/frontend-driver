@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "568416567998",
+    "project_id": "moyeota-b1654",
+    "storage_bucket": "moyeota-b1654.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:568416567998:android:7a93d2e52e9ed8fd6f14ef",
+        "android_client_info": {
+          "package_name": "com.moyeota"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBXdA8XjOwn1TIhLY5IwSE_Qukq9Dzgc-g"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:568416567998:android:d828354a6c2bbcd76f14ef",
+        "android_client_info": {
+          "package_name": "com.moyeota.driver"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBXdA8XjOwn1TIhLY5IwSE_Qukq9Dzgc-g"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
