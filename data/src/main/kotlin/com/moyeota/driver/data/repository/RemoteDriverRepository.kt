@@ -4,16 +4,20 @@ import com.moyeota.driver.data.remote.AuthApi
 import com.moyeota.driver.data.remote.DispatchApi
 import com.moyeota.driver.data.remote.DispatchRules
 import com.moyeota.driver.data.remote.DriverApi
+import com.moyeota.driver.data.remote.NetworkModule
+import com.moyeota.driver.data.remote.ReportApi
 import com.moyeota.driver.data.remote.auth.TokenStore
 import com.moyeota.driver.data.remote.calcFareResult
 import com.moyeota.driver.data.remote.driverAccountStatus
 import com.moyeota.driver.data.remote.normalizePhoneNumber
+import com.moyeota.driver.data.remote.dto.CallResultRequestDto
 import com.moyeota.driver.data.remote.dto.CompleteRideRequestDto
 import com.moyeota.driver.data.remote.dto.LocationReportRequestDto
 import com.moyeota.driver.data.remote.dto.PhoneCheckRequestDto
 import com.moyeota.driver.data.remote.dto.RegisterDriverRequestDto
 import com.moyeota.driver.data.remote.dto.RegisterFcmTokenRequestDto
 import com.moyeota.driver.data.remote.dto.RegisterVehicleRequestDto
+import com.moyeota.driver.data.remote.dto.ReportRequestDto
 import com.moyeota.driver.data.remote.dto.TokenRequestDto
 import com.moyeota.driver.data.remote.dto.UserLoginRequestDto
 import com.moyeota.driver.data.remote.serverMessage
@@ -68,6 +72,8 @@ class RemoteDriverRepository(
     private val fallback: DummyDriverRepository,
     /** 단말 실측 위치 — 미주입(테스트·더미 구동)이면 기본 좌표로 폴백한다 */
     private val locationSource: DriverLocationSource = DriverLocationSource { null },
+    /** 긴급 신고 API — 기본값은 NetworkModule 인증 클라이언트 (AppContainer 수정 불필요) */
+    private val reportApi: ReportApi = NetworkModule.reportApi(),
 ) : DriverRepository {
 
     private var vehicleInfoLabel: String = DEFAULT_VEHICLE_LABEL
@@ -404,6 +410,50 @@ class RemoteDriverRepository(
     private fun flushFcmTokenAsync() {
         val token = lastFcmToken ?: return
         fcmScope.launch { sendFcmTokenQuietly(token) }
+    }
+
+    // ── 긴급 신고 (D15 — POST /api/v1/reports) ─────────────────────────────
+
+    /**
+     * 실연동: POST /reports (토큰 기반 @CurrentUser). partyId 는 tripId 파싱값 —
+     * 더미 트립(숫자 아님)이면 null 로 보내 신고자·위치만이라도 서버에 남긴다.
+     * 위치는 하트비트와 같은 [refreshLocation] (실측, 실패 시 직전 좌표).
+     * 실패는 한국어 예외 전파 — 화면은 저장 실패와 무관하게 112 다이얼로 진행한 뒤 배너를 띄운다.
+     */
+    override suspend fun reportEmergency(tripId: String): Long {
+        val location = refreshLocation()
+        val response = try {
+            reportApi.report(
+                ReportRequestDto(
+                    partyId = tripId.toLongOrNull(),
+                    latitude = location.latitude,
+                    longitude = location.longitude,
+                ),
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: retrofit2.HttpException) {
+            throw IllegalStateException("신고 접수 실패: ${e.serverMessage() ?: "서버 오류(${e.code()})"}", e)
+        } catch (e: Exception) {
+            throw IllegalStateException("신고 접수 실패: ${e.message ?: "네트워크 오류"}", e)
+        }
+        return requireNotNull(response.reportId) { "신고 접수 실패: 서버 응답에 reportId 가 없습니다" }
+    }
+
+    /**
+     * 실연동: PATCH /reports/call-result (204) — 서버가 내 최근 신고에 실제 통화 여부를 기록한다.
+     * 실패는 한국어 예외 전파 (화면 유지 + 재시도).
+     */
+    override suspend fun confirmEmergencyCall(called: Boolean) {
+        try {
+            reportApi.confirmCallResult(CallResultRequestDto(called = called))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: retrofit2.HttpException) {
+            throw IllegalStateException("통화 여부 기록 실패: ${e.serverMessage() ?: "서버 오류(${e.code()})"}", e)
+        } catch (e: Exception) {
+            throw IllegalStateException("통화 여부 기록 실패: ${e.message ?: "네트워크 오류"}", e)
+        }
     }
 
     // ── 콜 ────────────────────────────────────────────────────────────────

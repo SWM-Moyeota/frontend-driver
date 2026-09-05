@@ -49,3 +49,9 @@
 - 가입 플로우: ①휴대폰 입력 → isPhoneRegistered → true면 "이미 가입된 번호" 안내 + 로그인 유도(D01 복귀) / false면 ②프로필(이름·아이디·비밀번호) → ③택시 정보(차종·좌석수·번호판·운수종사자 번호) → signUp(form)
 - 백엔드 예정 API: GET /api/v1/users/exists?phoneNumber=… (permitAll, {exists:Boolean}) — 생기면 Remote 실연동 교체 (RemoteDriverRepository TODO 주석 참조)
 - 전화번호 검증: 백엔드 @Pattern `^01[016-9]-?\d{3,4}-?\d{4}$`
+
+## 긴급 신고 계약 (2026-09-06 리더 확정)
+- 흐름: D15 신고 버튼 **3초 홀드** → ①서버 저장(POST /api/v1/reports {partyId, latitude, longitude} → {reportId}) ②112 다이얼러(ACTION_DIAL, 번호 입력된 상태 — 통화 버튼만 누르면 연결) → 앱 복귀 시 "실제 통화 여부" 다이얼로그 → PATCH /api/v1/reports/call-result {called} (204, 서버가 내 최근 신고에 기록)
+- 도메인 (리더 반영 완료): `reportEmergency(tripId): Long` (위치는 데이터 계층이 locationSource 최신값으로 채움), `confirmEmergencyCall(called: Boolean)`. Dummy 구현 완료
+- SafetyButton (리더 반영 완료): 시그니처 변경 → `SafetyButton(text, onHoldComplete, modifier, holdMillis=3000, onShortPress)` — 홀드 진행 게이지 내장, 짧은 탭은 onShortPress(안내용)
+- 원칙: 신고 저장 실패와 무관하게 112 다이얼은 **반드시** 열린다 (통화 최우선). 다이얼로그 미응답 상태는 화면 유지

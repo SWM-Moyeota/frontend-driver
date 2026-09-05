@@ -153,6 +153,15 @@ class DummyDriverRepository : DriverRepository {
         // no-op — 더미 피드 없음
     }
 
+    override suspend fun reportEmergency(tripId: String): Long {
+        delay(200)
+        return 1L
+    }
+
+    override suspend fun confirmEmergencyCall(called: Boolean) {
+        delay(200)
+    }
+
     override suspend fun getCalls(): List<CallSummary> {
         delay(300)
         return calls

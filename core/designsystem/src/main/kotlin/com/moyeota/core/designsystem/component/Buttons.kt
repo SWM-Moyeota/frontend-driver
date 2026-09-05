@@ -1,7 +1,14 @@
 package com.moyeota.core.designsystem.component
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
@@ -12,8 +19,16 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
 import com.moyeota.core.designsystem.theme.MoyeotaColor
 import com.moyeota.core.designsystem.theme.MoyeotaType
 
@@ -70,18 +85,51 @@ fun SecondaryButton(
 @Composable
 fun SafetyButton(
     text: String,
-    onClick: () -> Unit,
+    onHoldComplete: () -> Unit,
     modifier: Modifier = Modifier,
+    holdMillis: Int = 3_000,
+    onShortPress: () -> Unit = {},
 ) {
-    Button(
-        onClick = onClick,
-        modifier = modifier.fillMaxWidth().height(56.dp),
-        shape = CircleShape,
-        colors = ButtonDefaults.buttonColors(
-            containerColor = MoyeotaColor.Safety500,
-            contentColor = MoyeotaColor.TextOnDark,
-        ),
+    val progress = remember { Animatable(0f) }
+    val scope = rememberCoroutineScope()
+    // 콜백은 최신 참조 유지 — pointerInput 의 key 재시작 없이 람다 교체를 흡수한다
+    val currentOnHoldComplete by rememberUpdatedState(onHoldComplete)
+    val currentOnShortPress by rememberUpdatedState(onShortPress)
+
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(60.dp)
+            .clip(CircleShape)
+            .background(MoyeotaColor.Safety600)
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onPress = {
+                        var completed = false
+                        val hold = scope.launch {
+                            progress.animateTo(1f, tween(holdMillis, easing = LinearEasing))
+                            completed = true
+                            currentOnHoldComplete()
+                        }
+                        val released = tryAwaitRelease()
+                        if (!completed) {
+                            hold.cancel()
+                            if (released) currentOnShortPress()
+                        }
+                        progress.snapTo(0f)
+                    },
+                )
+            },
+        contentAlignment = Alignment.Center,
     ) {
-        Text(text = text, style = MoyeotaType.ButtonLg)
+        // 홀드 진행률 — 왼쪽부터 차오르는 게이지. 3초를 채워야 발화한다 (오신고 방지)
+        Box(
+            Modifier
+                .align(Alignment.CenterStart)
+                .fillMaxHeight()
+                .fillMaxWidth(progress.value)
+                .background(MoyeotaColor.Safety500),
+        )
+        Text(text = text, style = MoyeotaType.ButtonLg, color = MoyeotaColor.TextOnDark)
     }
 }

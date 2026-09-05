@@ -19,7 +19,7 @@ import java.util.concurrent.TimeUnit
  * 클라이언트 2종:
  * - 기본 클라이언트: [authApi] 전용. Bearer 인터셉터·Authenticator 없음 — 재발급이 재발급을
  *   부르는 재귀를 원천 차단한다.
- * - 인증 클라이언트: [driverApi]·[dispatchApi]. 모든 요청에 Bearer 부착([AuthHeaderInterceptor]),
+ * - 인증 클라이언트: [driverApi]·[dispatchApi]·[reportApi]. 모든 요청에 Bearer 부착([AuthHeaderInterceptor]),
  *   401 시 reissue 1회 재시도([TokenAuthenticator]).
  */
 object NetworkModule {
@@ -44,6 +44,8 @@ object NetworkModule {
     fun driverApi(): DriverApi = authedRetrofit.create(DriverApi::class.java)
 
     fun dispatchApi(): DispatchApi = authedRetrofit.create(DispatchApi::class.java)
+
+    fun reportApi(): ReportApi = authedRetrofit.create(ReportApi::class.java)
 
     private val cachedAuthApi: AuthApi by lazy { baseRetrofit.create(AuthApi::class.java) }
 

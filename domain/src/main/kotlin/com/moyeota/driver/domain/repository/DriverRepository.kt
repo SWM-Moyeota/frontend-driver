@@ -68,6 +68,18 @@ interface DriverRepository {
     /** CALL_CLOSED 수신 — 콜 피드에서 제거 */
     suspend fun handleCallClosed(partyId: String)
 
+    // 긴급 신고 (D15 — 신고 버튼 3초 홀드)
+
+    /**
+     * 긴급 신고 접수 — 서버가 매칭방(파티) 정보와 신고 시점 위치를 저장하고 신고 id 를 반환한다.
+     * 위치는 데이터 계층이 최신 측위값으로 채운다. 실패는 예외 전파 — 단, 화면은 신고 저장 실패와
+     * 무관하게 112 다이얼로 진행해야 한다 (통화가 최우선).
+     */
+    suspend fun reportEmergency(tripId: String): Long
+
+    /** 다이얼에서 복귀 후 "실제 통화 여부" 저장 (서버는 내 최근 신고 기준으로 기록) */
+    suspend fun confirmEmergencyCall(called: Boolean)
+
     // 콜 (D09~D12, D22)
     suspend fun getCalls(): List<CallSummary>
     suspend fun getCallDetail(callId: String): CallDetail
