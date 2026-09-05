@@ -17,13 +17,20 @@ import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.windowInsetsTopHeight
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.Canvas
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Call
+import androidx.compose.material.icons.rounded.Home
+import androidx.compose.material.icons.rounded.Person
+import androidx.compose.material.icons.rounded.ReceiptLong
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -78,8 +85,11 @@ fun BackArrowIcon(modifier: Modifier = Modifier) {
     }
 }
 
-enum class MoyeotaTab(val label: String) {
-    HOME("홈"), CALLS("콜"), SETTLEMENT("정산"), MYPAGE("마이")
+enum class MoyeotaTab(val label: String, val icon: ImageVector) {
+    HOME("홈", Icons.Rounded.Home),
+    CALLS("콜", Icons.Rounded.Call),
+    SETTLEMENT("정산", Icons.Rounded.ReceiptLong),
+    MYPAGE("마이", Icons.Rounded.Person),
 }
 
 // 하단탭 — 기사 앱 공통 규칙: D06·D07·D09·D12·D17·D19·D20 화면에서만 노출
@@ -104,7 +114,12 @@ fun MoyeotaBottomBar(
                     verticalArrangement = Arrangement.spacedBy(2.dp),
                     modifier = Modifier.clickable { onSelect(tab) }.padding(horizontal = 16.dp, vertical = 8.dp),
                 ) {
-                    Box(Modifier.size(22.dp).background(color, RoundedCornerShape(6.dp)))
+                    Icon(
+                        imageVector = tab.icon,
+                        contentDescription = tab.label,
+                        tint = color,
+                        modifier = Modifier.size(24.dp),
+                    )
                     Text(text = tab.label, style = MoyeotaType.CaptionSm, color = color)
                 }
             }

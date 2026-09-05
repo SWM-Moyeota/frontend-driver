@@ -26,6 +26,8 @@ dependencies {
     api(libs.androidx.compose.ui)
     api(libs.androidx.compose.foundation)
     api(libs.androidx.compose.material3)
+    // 하단탭 등 아이콘 — 미사용분은 R8 이 릴리즈에서 제거한다
+    implementation(libs.androidx.compose.material.icons.extended)
     api(libs.androidx.compose.ui.tooling.preview)
     // 네이버 지도: NaverMapView 가 공용 컴포넌트라 소비 모듈(presentation)에도 타입 노출 필요
     api(libs.naver.map.sdk)
