@@ -1,0 +1,61 @@
+name: Claude PR Review
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, synchronize]
+
+# 같은 PR에 연속 push 시 낡은 diff 기준 리뷰가 중복 완주하지 않도록 이전 실행을 취소
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  claude-review:
+    # 드래프트 PR은 리뷰하지 않음
+    # 봇 작성 PR(develop→main 릴리즈 PR 등)은 리뷰 생략 — claude-code-action이 비인간 액터를 거부하고,
+    # 내용도 develop 유입 시 이미 리뷰됨. 사람이 만든 feature 리뷰는 그대로 동작한다.
+    if: ${{ !github.event.pull_request.draft && github.event.pull_request.user.type != 'Bot' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+      actions: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # git diff로 베이스 브랜치와 비교하려면 전체 히스토리 필요 (얕은 클론이면 실패)
+          fetch-depth: 0
+
+      - name: Run Claude Code Review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # track_progress는 넣지 말 것: tag 모드(@claude 멘션 대기)로 강제되어 자동 리뷰가 실행되지 않음
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            이 PR을 코드 리뷰해줘. 리뷰는 한국어로.
+            모여타 Android 앱(Jetpack Compose 멀티모듈)이야.
+            모듈: app(진입점·DI) / core:designsystem(색·타이포·공용 컴포넌트) / presentation(화면·NavGraph) / domain(모델·Repository 인터페이스) / data(Retrofit·DTO·Repository 구현). DI는 수동 AppContainer.
+
+            리뷰 관점:
+            1. **버그** - 로직 오류, null/엣지 케이스, 코루틴 취소·예외 처리, StateFlow 상태 전이 누락
+            2. **모듈 경계** - presentation·data는 domain에만 의존, domain은 Android/Compose 의존 금지,
+               DTO는 data 밖으로 노출 금지(화면은 domain 모델만 사용), 매퍼 누락
+            3. **Compose** - 화면 컴포저블은 상태를 파라미터로 받는 순수 형태 유지(ViewModel 접근은 Route 래퍼에서만),
+               불필요한 recomposition, remember/LaunchedEffect 오남용, 하드코딩 색·치수 대신 designsystem 토큰 사용
+            4. **상태 처리** - 서버 연동 화면의 로딩/에러/재시도 상태 누락, 화면 재진입 시 갱신 타이밍
+            5. **보안** - 시크릿·토큰 하드코딩, 로그로 개인정보/토큰 노출
+
+            리뷰 방법:
+            - diff만 보지 말고 Read로 주변 코드 확인 후 판단
+            - 문제 라인에 mcp__github_inline_comment__create_inline_comment로 인라인 코멘트, 심각도 표시(🔴/🟡/🟢), 수정 예시 포함
+            - 마지막 전체 요약은 반드시 `gh pr comment`로 게시(최종 응답으로만 쓰면 아무도 못 봄)
+            - 불확실하면 추측이라고 명시
+
+          claude_args: |
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Read,Grep,Glob,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(git diff:*),Bash(git log:*)"
