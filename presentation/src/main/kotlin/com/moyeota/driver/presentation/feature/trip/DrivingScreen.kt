@@ -27,7 +27,6 @@ import androidx.navigation.NavHostController
 import com.moyeota.core.designsystem.component.NoticeBanner
 import com.moyeota.core.designsystem.component.NoticeKind
 import com.moyeota.core.designsystem.component.PrimaryCtaButton
-import com.moyeota.core.designsystem.component.SafetyButton
 import com.moyeota.core.designsystem.component.StatusBarMock
 import com.moyeota.core.designsystem.theme.MoyeotaColor
 import com.moyeota.core.designsystem.theme.MoyeotaType
@@ -232,25 +231,19 @@ private fun DrivingScreen(
             }
         }
 
-        // 하단 CTA — 좌: 긴급 신고(시트 미연결, 표시만), 우: 하차 처리
+        // 하단 CTA — 하차 처리 (신고 기능은 승객 앱 전용이라 기사 화면에는 두지 않는다)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(MoyeotaColor.SurfaceCard)
                 .padding(16.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            SafetyButton(
-                text = "긴급 · 신고",
-                onClick = { /* 긴급 신고 시트 미연결 — 표시만 */ },
-                modifier = Modifier.weight(1f).height(60.dp),
-            )
             PrimaryCtaButton(
                 text = "하차 처리",
                 onClick = { next?.let { onDropoff(it.first.id) } },
                 enabled = next != null,
                 loading = processing,
-                modifier = Modifier.weight(2f).height(60.dp),
+                modifier = Modifier.weight(1f).height(60.dp),
             )
         }
     }
