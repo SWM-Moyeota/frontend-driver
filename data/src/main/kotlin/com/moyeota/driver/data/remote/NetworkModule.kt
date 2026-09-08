@@ -24,8 +24,8 @@ import java.util.concurrent.TimeUnit
  */
 object NetworkModule {
 
-    /** 에뮬레이터에서 호스트의 localhost:8080 (백엔드 Spring) */
-    const val BASE_URL = "http://10.0.2.2:8080/"
+    /** 배포 백엔드(CloudFront/HTTPS). 로컬 개발 시 주석의 에뮬레이터 주소로 바꿔 쓴다 */
+    const val BASE_URL = "https://api.moyeota.p-e.kr/" // 배포 서버. 로컬 백엔드는 "http://10.0.2.2:8080/" (에뮬레이터)
 
     private val json = Json {
         ignoreUnknownKeys = true     // 서버 필드 추가에 관대
