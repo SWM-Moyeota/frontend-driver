@@ -142,6 +142,8 @@ private fun CallListScreen(
     val filtered = when (filter) {
         CallFilter.ALL -> calls
         CallFilter.POOL_ONLY -> calls.filter { it.type == CallType.POOL }
+        // 거리 미상(푸시 임시 요약, 0.0)도 남긴다 — 방금 들어온 실콜을 필터가 삼키면 콜을 놓친다.
+        // 상세가 도착하면 실거리로 다시 판정된다.
         CallFilter.NEAR -> calls.filter { it.distanceToPickupKm <= 1.0 }
     }
 
@@ -212,17 +214,21 @@ private fun CallCard(call: CallSummary, onClick: () -> Unit) {
                 color = MoyeotaColor.InkPrimary,
                 modifier = Modifier.weight(1f).padding(end = 8.dp),
             )
-            if (isPool) {
-                StatusBadge(kind = NoticeKind.SUCCESS, text = "합승 ${call.passengerCount}인")
-            } else {
-                StatusBadge(kind = NoticeKind.WAITING, text = "단독")
+            when {
+                // 인원은 푸시 임시 요약에서 비어 있을 수 있다 — 모르면 "합승"까지만 말한다
+                isPool && call.hasPassengerCount ->
+                    StatusBadge(kind = NoticeKind.SUCCESS, text = "합승 ${call.passengerCount}인")
+                isPool -> StatusBadge(kind = NoticeKind.SUCCESS, text = "합승")
+                else -> StatusBadge(kind = NoticeKind.WAITING, text = "단독")
             }
         }
         Text(
+            // 거리·보너스는 서버 상세가 채우는 값 — 푸시만 받은 콜에서는 "픽업 0.0km · 보너스 +0원" 같은
+            // 없는 정보를 지어내지 않고 생략한다(상세가 도착하면 같은 카드가 실값으로 다시 그려진다).
             text = buildString {
-                append("픽업 ${km(call.distanceToPickupKm)}")
-                if (isPool) append(" · 보너스 +${won(call.poolBonus)}")
-                append(" · ${call.createdAtLabel}")
+                if (call.distanceToPickupKm > 0.0) append("픽업 ${km(call.distanceToPickupKm)} · ")
+                if (isPool && call.poolBonus > 0) append("보너스 +${won(call.poolBonus)} · ")
+                append(call.createdAtLabel)
             },
             style = MoyeotaType.BodyLg,
             color = MoyeotaColor.TextBody,
@@ -234,7 +240,7 @@ private fun CallCard(call: CallSummary, onClick: () -> Unit) {
                 color = MoyeotaColor.Link,
             )
             Text(
-                text = won(call.expectedTotal),
+                text = if (call.hasFareEstimate) won(call.expectedTotal) else "확인 중",
                 style = MoyeotaType.NumberMd,
                 color = MoyeotaColor.Link,
                 modifier = Modifier.weight(1f),

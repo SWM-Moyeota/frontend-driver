@@ -65,23 +65,3 @@ fun SecondaryButton(
         Text(text = text, style = MoyeotaType.ButtonLg)
     }
 }
-
-// 비상 신고 전용 버튼 — Safety 색은 여기 외 사용 금지
-@Composable
-fun SafetyButton(
-    text: String,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Button(
-        onClick = onClick,
-        modifier = modifier.fillMaxWidth().height(56.dp),
-        shape = CircleShape,
-        colors = ButtonDefaults.buttonColors(
-            containerColor = MoyeotaColor.Safety500,
-            contentColor = MoyeotaColor.TextOnDark,
-        ),
-    ) {
-        Text(text = text, style = MoyeotaType.ButtonLg)
-    }
-}

@@ -24,10 +24,6 @@ object MoyeotaColor {
     val Danger600 = Color(0xFFE63946)
     val Danger50 = Color(0xFF331418)
 
-    // 비상 신고 전용 — 다른 곳 사용 금지
-    val Safety500 = Color(0xFFDC2626)
-    val Safety600 = Color(0xFFEF4444)
-
     // ink / text — 다크 반전
     val InkPrimary = Color(0xFFF5F7FA)    // 본문 대비 최우선 텍스트
     val InkDeep = Color(0xFFFFFFFF)

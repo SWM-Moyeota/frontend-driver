@@ -146,6 +146,17 @@ class DummyDriverRepository : DriverRepository {
         // no-op — 더미는 서버 등록 없음
     }
 
+    /** 더미는 푸시 피드가 없다 — 임시 요약을 보관하지 않는다 (실콜 경로 전용 기능) */
+    override fun seedCallPreview(
+        partyId: String,
+        departure: String?,
+        destination: String?,
+        memberCount: Int?,
+        estimatedFare: Int?,
+    ): CallSummary? = null
+
+    override fun peekCallSummary(callId: String): CallSummary? = calls.firstOrNull { it.id == callId }
+
     /** 더미 콜 첫 건을 "새로 열린 콜"로 흉내 낸다 (알림 표시 경로 테스트용) */
     override suspend fun handleCallOpened(partyId: String): CallSummary? = calls.first()
 

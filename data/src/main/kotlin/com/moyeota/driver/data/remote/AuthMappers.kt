@@ -38,6 +38,7 @@ fun DriverSignUpForm.toRegisterRequest(): UserRegisterRequestDto =
     UserRegisterRequestDto(
         loginId = loginId,
         password = password,
+        nickname = nickname.trim(),
         name = name,
         birthDate = MvpProfileDefaults.BIRTH_DATE,
         phoneNumber = normalizePhoneNumber(phoneNumber),

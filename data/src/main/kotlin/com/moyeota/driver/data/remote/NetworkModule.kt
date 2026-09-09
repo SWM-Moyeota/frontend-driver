@@ -24,8 +24,8 @@ import java.util.concurrent.TimeUnit
  */
 object NetworkModule {
 
-    /** 에뮬레이터에서 호스트의 localhost:8080 (백엔드 Spring) */
-    const val BASE_URL = "http://10.0.2.2:8080/"
+    /** 배포 백엔드(CloudFront/HTTPS). 로컬 개발 시 주석의 에뮬레이터 주소로 바꿔 쓴다 */
+    const val BASE_URL = "https://api.moyeota.p-e.kr/" // 배포 서버. 로컬 백엔드는 "http://10.0.2.2:8080/" (에뮬레이터)
 
     private val json = Json {
         ignoreUnknownKeys = true     // 서버 필드 추가에 관대
@@ -59,8 +59,11 @@ object NetworkModule {
 
     private fun baseOkHttpClient(): OkHttpClient =
         OkHttpClient.Builder()
-            .connectTimeout(5, TimeUnit.SECONDS)
-            .readTimeout(10, TimeUnit.SECONDS)
+            // 배포 서버(https://api.moyeota.p-e.kr)는 유휴 후 첫 요청 응답이 7~8초까지 걸린다(콜드 스타트).
+            // 5s/10s 로는 콜 상세 조회가 그 구간에서 통째로 타임아웃돼 콜 정보를 못 띄웠다.
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(20, TimeUnit.SECONDS)
+            .writeTimeout(20, TimeUnit.SECONDS)
             .addInterceptor(
                 HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BODY },
             )

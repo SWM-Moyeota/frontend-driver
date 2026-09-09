@@ -31,6 +31,9 @@ class CallFeed {
         synchronized(lock) { calls.remove(callId) }
     }
 
+    /** 피드에 있는 콜 요약(임시 또는 확정). 없으면 null — 상세 조회 실패 시 화면이 보여줄 최소 정보 원천 */
+    fun find(callId: String): CallSummary? = synchronized(lock) { calls[callId] }
+
     /** 피드의 실콜을 최신 도착 순(나중에 들어온 콜이 앞)으로 돌려준다 */
     fun snapshot(): List<CallSummary> = synchronized(lock) { calls.values.toList() }.asReversed()
 

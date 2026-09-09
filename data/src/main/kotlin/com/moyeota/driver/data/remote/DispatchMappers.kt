@@ -51,6 +51,41 @@ fun PartySummaryDto.toCallSummary(driverLat: Double? = null, driverLng: Double? 
     )
 }
 
+/**
+ * CALL_OPENED 푸시 데이터 → **임시** CallSummary.
+ *
+ * 푸시에는 출발지·도착지가 항상 실려 오고, 인원(memberCount)·예상 요금(estimatedFare)은 백엔드 버전에 따라
+ * 없을 수 있다. 없는 값을 앱 규칙으로 지어내면(호출료 3,000 · 보너스 1,500) "예상 수익 4,500원" 같은
+ * 거짓 금액이 뜨므로, 요금을 모를 때는 금액 계열을 전부 0 으로 두고 화면이 "확인 중"으로 표시하게 한다.
+ *
+ * - 인원 미상: passengerCount = 0 ([CallSummary.hasPassengerCount] false) → 화면은 "합승"만 표기
+ * - 콜 종류: 인원이 1명으로 명시된 경우에만 SOLO, 미상·2명 이상은 합승 콜(POOL)로 본다 (파티 콜이 기본)
+ * - 픽업 거리: 푸시에 좌표가 없어 0.0 (화면은 0 이면 거리 줄을 감춘다)
+ */
+fun pushCallSummary(
+    partyId: String,
+    departure: String?,
+    destination: String?,
+    memberCount: Int?,
+    estimatedFare: Int?,
+): CallSummary {
+    val type = if (memberCount != null && memberCount < 2) CallType.SOLO else CallType.POOL
+    val fareKnown = estimatedFare != null && estimatedFare > 0
+    return CallSummary(
+        id = partyId,
+        type = type,
+        pickupPlace = departure?.takeIf { it.isNotBlank() } ?: "출발지 미상",
+        dropoffPlace = destination?.takeIf { it.isNotBlank() } ?: "도착지 미상",
+        distanceToPickupKm = 0.0,
+        expectedFare = if (fareKnown) estimatedFare else 0,
+        callFee = if (fareKnown) DispatchRules.CALL_FEE else 0,
+        poolBonus = if (fareKnown && type == CallType.POOL) DispatchRules.POOL_BONUS else 0,
+        passengerCount = memberCount?.coerceAtLeast(0) ?: 0,
+        createdAtLabel = "방금 전",
+        provisional = true,
+    )
+}
+
 fun PartySummaryDto.toCallDetail(driverLat: Double? = null, driverLng: Double? = null): CallDetail {
     val summary = toCallSummary(driverLat, driverLng)
     return CallDetail(

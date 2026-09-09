@@ -17,6 +17,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -44,6 +45,8 @@ import com.moyeota.core.designsystem.component.SecondaryButton
 import com.moyeota.core.designsystem.theme.MoyeotaColor
 import com.moyeota.core.designsystem.theme.MoyeotaType
 import com.moyeota.driver.domain.model.CallDetail
+import com.moyeota.driver.domain.model.CallException
+import com.moyeota.driver.domain.model.CallSummary
 import com.moyeota.driver.domain.model.CallType
 import com.moyeota.driver.domain.model.RouteStop
 import com.moyeota.driver.domain.model.StopKind
@@ -56,6 +59,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlin.coroutines.cancellation.CancellationException
 
 // ── D10 콜 상세 · 수락 · 거절 ───────────────────────────────────────────
 
@@ -63,15 +67,23 @@ class CallDetailViewModel(
     private val repository: DriverRepository,
     private val callId: String,
 ) : ViewModel() {
+    /**
+     * 로딩·에러 상태가 푸시 임시 요약([preview])을 함께 나른다.
+     * 상세 조회가 늦거나 실패해도 기사에게 출발지·도착지·합승 인원은 남겨야 하기 때문이다 —
+     * 빈 로딩 화면이나 "불러오지 못했어요" 한 줄만 띄우면 콜을 받을지 판단할 근거가 사라진다.
+     */
     sealed interface UiState {
-        data object Loading : UiState
+        data class Loading(val preview: CallSummary?) : UiState
         data class Success(val detail: CallDetail) : UiState
-        data class Error(val message: String) : UiState
+        data class Error(val message: String, val preview: CallSummary?) : UiState
     }
+
+    /** 상세 조회 실패 1건 — 사용자 문구와 자동 재시도 가치 */
+    private data class LoadFailure(val message: String, val retryable: Boolean)
 
     enum class Submitting { NONE, ACCEPT, DECLINE }
 
-    private val _uiState = MutableStateFlow<UiState>(UiState.Loading)
+    private val _uiState = MutableStateFlow<UiState>(UiState.Loading(null))
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
 
     private val _submitting = MutableStateFlow(Submitting.NONE)
@@ -84,13 +96,32 @@ class CallDetailViewModel(
 
     fun refresh() {
         viewModelScope.launch {
-            _uiState.value = UiState.Loading
-            try {
-                _uiState.value = UiState.Success(repository.getCallDetail(callId))
-            } catch (e: Exception) {
-                _uiState.value = UiState.Error("콜 정보를 불러오지 못했어요")
+            // 푸시(CALL_OPENED)로 이미 받아 둔 실제 출발·도착·인원 — 상세가 오기 전/실패해도 이건 보여준다
+            val preview = repository.peekCallSummary(callId)
+            _uiState.value = UiState.Loading(preview)
+
+            var failure = fetchDetail()
+            if (failure != null && failure.retryable) {
+                // 배포 서버는 유휴 후 첫 응답이 수 초 걸려 한 번은 통째로 타임아웃된다.
+                // 콜 카운트다운이 도는 동안 기사가 직접 재시도 버튼을 누르게 하는 대신 조용히 한 번 더 시도한다.
+                failure = fetchDetail()
             }
+            if (failure != null) _uiState.value = UiState.Error(failure.message, preview)
         }
+    }
+
+    /** 성공하면 Success 로 전이하고 null, 실패하면 실패 정보를 돌려준다 */
+    private suspend fun fetchDetail(): LoadFailure? = try {
+        _uiState.value = UiState.Success(repository.getCallDetail(callId))
+        null
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        LoadFailure(
+            message = e.message?.takeIf { it.isNotBlank() } ?: "콜 정보를 불러오지 못했어요",
+            // 마감된 콜·인증 만료는 다시 물어도 답이 같다 — 그 외(네트워크·서버)만 재시도한다
+            retryable = (e as? CallException)?.retryable ?: true,
+        )
     }
 
     fun accept(onAccepted: () -> Unit) {
@@ -151,8 +182,33 @@ fun CallDetailRoute(
 
     BackStateScaffold(title = "콜 상세", onBack = onBack) {
         when (val state = uiState) {
-            is CallDetailViewModel.UiState.Loading -> LoadingBox()
-            is CallDetailViewModel.UiState.Error -> ErrorBox(message = state.message, onRetry = viewModel::refresh)
+            // 임시 요약이 있으면 로딩·에러에서도 콜 정보를 띄운다. 없을 때만 기존 로딩/에러 화면으로 떨어진다.
+            is CallDetailViewModel.UiState.Loading -> state.preview?.let { preview ->
+                CallPreviewScreen(
+                    summary = preview,
+                    loading = true,
+                    errorMessage = null,
+                    submitting = submitting,
+                    actionError = actionError,
+                    onReload = viewModel::refresh,
+                    onAccept = { viewModel.accept(onAccepted) },
+                    onDecline = { viewModel.decline(onBack) },
+                )
+            } ?: LoadingBox()
+
+            is CallDetailViewModel.UiState.Error -> state.preview?.let { preview ->
+                CallPreviewScreen(
+                    summary = preview,
+                    loading = false,
+                    errorMessage = state.message,
+                    submitting = submitting,
+                    actionError = actionError,
+                    onReload = viewModel::refresh,
+                    onAccept = { viewModel.accept(onAccepted) },
+                    onDecline = { viewModel.decline(onBack) },
+                )
+            } ?: ErrorBox(message = state.message, onRetry = viewModel::refresh)
+
             is CallDetailViewModel.UiState.Success -> CallDetailScreen(
                 detail = state.detail,
                 submitting = submitting,
@@ -277,26 +333,145 @@ private fun CallDetailScreen(
         }
 
         // 하단 CTA — 거절(보조) / 수락(주). 수락은 카운트다운 동안만 활성
-        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 16.dp)) {
-            if (actionError != null) {
-                NoticeBanner(kind = NoticeKind.ERROR, text = actionError)
-                Box(Modifier.height(12.dp))
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                SecondaryButton(
-                    text = "거절",
-                    onClick = onDecline,
-                    modifier = Modifier.width(112.dp),
-                    enabled = submitting == CallDetailViewModel.Submitting.NONE,
+        CallActionBar(
+            submitting = submitting,
+            actionError = actionError,
+            acceptEnabled = remaining > 0,
+            onAccept = onAccept,
+            onDecline = onDecline,
+        )
+    }
+}
+
+/**
+ * D10 대체 화면 — 서버 상세가 아직/끝내 오지 않았을 때 **푸시로 받은 실제 콜 정보**를 보여준다.
+ *
+ * 예전에는 이 자리에서 더미 콜 상세(강남역 2번 출구 · 김*진 · 판교역)가 떴다. 조회 실패를 조용히
+ * 더미로 메우면 기사는 존재하지 않는 승객·목적지를 보고 수락 여부를 판단하게 된다 — 그래서 지어낸
+ * 정보 대신 CALL_OPENED 푸시에 실려 온 출발지·도착지·합승 인원만 띄우고, 모르는 값은 비워 둔다.
+ *
+ * 수락·거절 버튼은 상세 없이도 눌린다. 콜의 유효성은 서버가 판정하므로(마감이면 409 → "이미 마감된 콜"),
+ * 조회 실패를 이유로 수락 기회까지 막을 이유가 없다.
+ */
+@Composable
+private fun CallPreviewScreen(
+    summary: CallSummary,
+    loading: Boolean,
+    errorMessage: String?,
+    submitting: CallDetailViewModel.Submitting,
+    actionError: String?,
+    onReload: () -> Unit,
+    onAccept: () -> Unit,
+    onDecline: () -> Unit,
+) {
+    val isPool = summary.type == CallType.POOL
+    val passengerLabel = if (summary.hasPassengerCount) "승객 ${summary.passengerCount}인" else "승객"
+
+    Column(Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 18.dp, vertical = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            // 콜 요약 — 인원을 모르면 "합승 콜"까지만, 요금을 모르면 금액 대신 "확인 중"
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(MoyeotaColor.Primary500)
+                    .padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = when {
+                            isPool && summary.hasPassengerCount -> "합승 ${summary.passengerCount}인 콜"
+                            isPool -> "합승 콜"
+                            else -> "단독 콜"
+                        },
+                        style = MoyeotaType.DisplayMd,
+                        color = MoyeotaColor.TextOnDark,
+                        modifier = Modifier.weight(1f),
+                    )
+                    if (loading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp),
+                            color = MoyeotaColor.TextOnDark,
+                            strokeWidth = 2.dp,
+                        )
+                    }
+                }
+                Text(
+                    text = if (summary.hasFareEstimate) {
+                        "예상 수익 ${won(summary.expectedTotal)}"
+                    } else {
+                        "예상 수익 확인 중"
+                    },
+                    style = MoyeotaType.BodyLg,
+                    color = MoyeotaColor.TextOnDark,
                 )
-                PrimaryCtaButton(
-                    text = "수락하기",
-                    onClick = onAccept,
-                    modifier = Modifier.weight(1f),
-                    enabled = remaining > 0,
-                    loading = submitting == CallDetailViewModel.Submitting.ACCEPT,
+            }
+
+            // 출발 · 도착 — 푸시 payload 의 실제 값
+            StopRow(RouteStop(order = 0, kind = StopKind.PICKUP, place = summary.pickupPlace, passengerMaskedName = passengerLabel))
+            StopRow(RouteStop(order = 1, kind = StopKind.DROPOFF, place = summary.dropoffPlace, passengerMaskedName = passengerLabel))
+
+            if (errorMessage != null) {
+                NoticeBanner(
+                    kind = NoticeKind.ERROR,
+                    text = "$errorMessage · 위 내용은 콜 알림으로 받은 정보예요",
+                )
+                SecondaryButton(text = "다시 불러오기", onClick = onReload, modifier = Modifier.fillMaxWidth())
+            } else {
+                Text(
+                    text = "픽업 거리 · 경유 순서를 불러오는 중이에요",
+                    style = MoyeotaType.BodyLg,
+                    color = MoyeotaColor.TextMute,
                 )
             }
+        }
+
+        CallActionBar(
+            submitting = submitting,
+            actionError = actionError,
+            // 상세를 못 받은 상태에서도 수락은 열어 둔다 — 마감 여부는 서버가 답한다
+            acceptEnabled = true,
+            onAccept = onAccept,
+            onDecline = onDecline,
+        )
+    }
+}
+
+/** 하단 CTA — 거절(보조) / 수락(주). 상세 화면과 임시 요약 화면이 같은 바를 쓴다 */
+@Composable
+private fun CallActionBar(
+    submitting: CallDetailViewModel.Submitting,
+    actionError: String?,
+    acceptEnabled: Boolean,
+    onAccept: () -> Unit,
+    onDecline: () -> Unit,
+) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 16.dp)) {
+        if (actionError != null) {
+            NoticeBanner(kind = NoticeKind.ERROR, text = actionError)
+            Box(Modifier.height(12.dp))
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            SecondaryButton(
+                text = "거절",
+                onClick = onDecline,
+                modifier = Modifier.width(112.dp),
+                enabled = submitting == CallDetailViewModel.Submitting.NONE,
+            )
+            PrimaryCtaButton(
+                text = "수락하기",
+                onClick = onAccept,
+                modifier = Modifier.weight(1f),
+                enabled = acceptEnabled && submitting == CallDetailViewModel.Submitting.NONE,
+                loading = submitting == CallDetailViewModel.Submitting.ACCEPT,
+            )
         }
     }
 }
