@@ -63,10 +63,23 @@ data class CallSummary(
     val expectedFare: Int,                // 예상 미터기 요금
     val callFee: Int,                     // 호출료
     val poolBonus: Int,                   // 합승 보너스 (단독 콜이면 0)
-    val passengerCount: Int,
+    val passengerCount: Int,               // 0 = 인원 미상 (푸시 임시 요약에서만 발생)
     val createdAtLabel: String,           // "방금 전" 등
+    /**
+     * CALL_OPENED 푸시 데이터만으로 만든 **임시** 요약인지.
+     * 상세 조회(GET /dispatch/calls/{partyId}) 전이라 인원·요금이 비어 있을 수 있고,
+     * 서버 상세가 도착하면 확정 요약(provisional = false)으로 교체된다.
+     * 화면은 이 플래그가 아니라 [hasPassengerCount] · [hasFareEstimate] 로 개별 항목의 유무를 판단한다.
+     */
+    val provisional: Boolean = false,
 ) {
     val expectedTotal: Int get() = expectedFare + callFee + poolBonus
+
+    /** 합승 인원을 아는가 — 모르면 화면은 "합승 N인" 대신 "합승"만 쓴다 */
+    val hasPassengerCount: Boolean get() = passengerCount > 0
+
+    /** 예상 수익을 표시할 만큼 요금 정보가 있는가 — 없으면 "요금 확인 중" */
+    val hasFareEstimate: Boolean get() = expectedTotal > 0
 }
 
 data class RouteStop(
