@@ -61,6 +61,24 @@ class DriverDtosTest {
         assertEquals(3L, parsed.userId)
         assertEquals("VERIFIED", parsed.status)
         assertTrue(parsed.callEnabled)
+        // 구서버 응답(name 없음) — null 로 파싱돼야 클라가 폴백 경로를 탄다
+        assertNull(parsed.name)
+    }
+
+    @Test
+    fun `DriverResult 의 name(닉네임)을 파싱한다 - 신서버 응답`() {
+        val parsed = json.decodeFromString(
+            DriverResultDto.serializer(),
+            """{"id":7,"userId":3,"name":"번개기사","status":"VERIFIED","callEnabled":true}""",
+        )
+        assertEquals("번개기사", parsed.name)
+        // 닉네임 미설정 유저 — 서버가 명시적 null 을 보낸다
+        assertNull(
+            json.decodeFromString(
+                DriverResultDto.serializer(),
+                """{"id":7,"userId":3,"name":null,"status":"VERIFIED","callEnabled":true}""",
+            ).name,
+        )
     }
 
     @Test

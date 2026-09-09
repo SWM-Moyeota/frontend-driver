@@ -88,6 +88,13 @@ class RemoteDriverRepository(
     @Volatile
     private var lastFcmToken: String? = null
 
+    /**
+     * 로그인/가입에서 확인한 표시 이름(닉네임) 캐시 — 홈 요약(더미)의 "박기사"를 실이름으로 덮는다.
+     * 실이름을 얻지 못하면 null 로 두어 홈은 더미 이름을 유지한다 (기본값 "기사"로 덮지 않는다).
+     */
+    @Volatile
+    private var cachedDriverName: String? = null
+
     /** 로그인/가입 성공 후 토큰 fire-and-forget 전송용 (호출 코루틴 수명과 분리) */
     private val fcmScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -130,9 +137,6 @@ class RemoteDriverRepository(
         }
         tokenStore.update(tokens.accessToken, tokens.refreshToken)
 
-        val name = runCatching { authApi.getMyInfo("Bearer ${tokens.accessToken}").name }
-            .getOrNull() ?: DEFAULT_DRIVER_NAME
-
         val driver = try {
             driverApi.getMe()
         } catch (e: retrofit2.HttpException) {
@@ -141,8 +145,12 @@ class RemoteDriverRepository(
             }
             throw IllegalStateException("기사 정보 조회 실패: ${e.serverMessage() ?: "서버 오류(${e.code()})"}", e)
         }
+        // 표시 이름: drivers/me 의 name(닉네임) 우선, 구서버·미설정이면 유저 정보 조회로 폴백
+        val name = driver.name?.takeIf { it.isNotBlank() }
+            ?: runCatching { authApi.getMyInfo("Bearer ${tokens.accessToken}").name }.getOrNull()
+        cachedDriverName = name
         flushFcmTokenAsync()
-        return LoginResult(status = driverAccountStatus(driver.status), driverName = name)
+        return LoginResult(status = driverAccountStatus(driver.status), driverName = name ?: DEFAULT_DRIVER_NAME)
     }
 
     /**
@@ -220,7 +228,9 @@ class RemoteDriverRepository(
         vehicleInfoLabel = "${form.vehicleType} ${form.plateNumber}"
 
         flushFcmTokenAsync()
-        return LoginResult(status = DriverAccountStatus.APPROVED, driverName = form.name.ifBlank { DEFAULT_DRIVER_NAME })
+        val displayName = form.nickname.ifBlank { form.name }
+        cachedDriverName = displayName.takeIf { it.isNotBlank() }
+        return LoginResult(status = DriverAccountStatus.APPROVED, driverName = displayName.ifBlank { DEFAULT_DRIVER_NAME })
     }
 
     /**
@@ -301,8 +311,17 @@ class RemoteDriverRepository(
 
     // ── 홈 · 영업 상태 ─────────────────────────────────────────────────────
 
-    /** 백엔드 미구현(오늘 수입·운행수 요약 API 없음) — 더미 위임. 영업 상태는 setDutyStatus 에서 동기화됨 */
-    override suspend fun getHomeSummary(): HomeSummary = fallback.getHomeSummary()
+    /**
+     * 수입·운행수 요약은 백엔드 미구현이라 더미 위임이지만, 기사 이름만은 실데이터로 덮는다
+     * (drivers/me 의 name = 유저 닉네임). 토큰 재발급 직후처럼 캐시가 없으면 한 번 조회해 채운다.
+     */
+    override suspend fun getHomeSummary(): HomeSummary {
+        val summary = fallback.getHomeSummary()
+        val name = cachedDriverName
+            ?: runCatching { driverApi.getMe().name?.takeIf { it.isNotBlank() } }.getOrNull()
+                ?.also { cachedDriverName = it }
+        return if (name != null) summary.copy(driverName = name) else summary
+    }
 
     /**
      * 실연동: POST /dispatch/online (위치 포함) · DELETE /dispatch/online — 토큰(@CurrentDriver) 기반.
