@@ -6,6 +6,7 @@ import com.moyeota.driver.domain.model.CallDetail
 import com.moyeota.driver.domain.model.CallSummary
 import com.moyeota.driver.domain.model.CallType
 import com.moyeota.driver.domain.model.FareResult
+import com.moyeota.driver.domain.model.GeoPoint
 import com.moyeota.driver.domain.model.RouteStop
 import com.moyeota.driver.domain.model.StopKind
 import com.moyeota.driver.domain.model.TripPassenger
@@ -93,8 +94,14 @@ fun PartySummaryDto.toCallDetail(driverLat: Double? = null, driverLng: Double? =
         stops = toStops(),
         countdownSeconds = DispatchRules.COUNTDOWN_SECONDS,
         etaToPickupMin = etaMinFromDistance(summary.distanceToPickupKm),
+        departurePoint = geoPointOrNull(departureLatitude, departureLongitude),
+        destinationPoint = geoPointOrNull(destinationLatitude, destinationLongitude),
     )
 }
+
+/** 위·경도가 둘 다 있을 때만 GeoPoint — 한쪽이라도 없으면 null (화면 폴백 유도) */
+internal fun geoPointOrNull(latitude: Double?, longitude: Double?): GeoPoint? =
+    if (latitude != null && longitude != null) GeoPoint(latitude, longitude) else null
 
 fun PartySummaryDto.toActiveTrip(
     vehicleInfoLabel: String,

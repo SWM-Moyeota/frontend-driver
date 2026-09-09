@@ -2,6 +2,7 @@ package com.moyeota.driver.data.remote
 
 import com.moyeota.driver.data.remote.dto.PartySummaryDto
 import com.moyeota.driver.domain.model.CallType
+import com.moyeota.driver.domain.model.GeoPoint
 import com.moyeota.driver.domain.model.StopKind
 import com.moyeota.driver.domain.model.TripPhase
 import kotlinx.serialization.json.Json
@@ -96,6 +97,33 @@ class DispatchMappersTest {
         assertEquals(StopKind.DROPOFF, detail.stops[1].kind)
         assertEquals("판교역 1번 출구", detail.stops[1].place)
         assertEquals(DispatchRules.COUNTDOWN_SECONDS, detail.countdownSeconds)
+    }
+
+    @Test
+    fun `CallDetail - 출발·도착 좌표를 GeoPoint 로 매핑한다`() {
+        val detail = poolParty.toCallDetail()
+
+        assertEquals(GeoPoint(37.4980, 127.0276), detail.departurePoint)
+        assertEquals(GeoPoint(37.3948, 127.1112), detail.destinationPoint)
+    }
+
+    @Test
+    fun `CallDetail - 좌표 미제공이면 GeoPoint 는 null`() {
+        val detail = PartySummaryDto(id = 7L).toCallDetail()
+
+        assertNull(detail.departurePoint)
+        assertNull(detail.destinationPoint)
+    }
+
+    @Test
+    fun `CallDetail - 위경도 중 한쪽만 있으면 null (반쪽 좌표 방어)`() {
+        val detail = poolParty.copy(
+            departureLongitude = null,     // 출발지: 위도만 존재
+            destinationLatitude = null,    // 도착지: 경도만 존재
+        ).toCallDetail()
+
+        assertNull(detail.departurePoint)
+        assertNull(detail.destinationPoint)
     }
 
     @Test
