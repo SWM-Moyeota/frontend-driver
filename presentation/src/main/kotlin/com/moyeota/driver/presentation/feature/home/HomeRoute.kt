@@ -114,7 +114,6 @@ fun HomeRoute(
     onTabSelect: (MoyeotaTab) -> Unit,
     onNavigateOffDutyConfirm: () -> Unit,
     onNavigateCallList: () -> Unit,
-    onNavigatePromotion: () -> Unit,
 ) {
     val viewModel: HomeViewModel = viewModel(factory = HomeViewModel.factory(repository))
     val uiState by viewModel.uiState.collectAsState()
@@ -138,7 +137,6 @@ fun HomeRoute(
                     myLocation = myLocation,
                     startingDuty = state.startingDuty,
                     onStartDuty = viewModel::startDuty,
-                    onPromotionClick = onNavigatePromotion,
                 )
 
                 DutyStatus.ONLINE -> HomeOnDutyScreen(
@@ -147,7 +145,6 @@ fun HomeRoute(
                     pendingCallCount = state.pendingCallCount,
                     onCallListClick = onNavigateCallList,
                     onEndDutyClick = onNavigateOffDutyConfirm,
-                    onPromotionClick = onNavigatePromotion,
                 )
             }
         }
