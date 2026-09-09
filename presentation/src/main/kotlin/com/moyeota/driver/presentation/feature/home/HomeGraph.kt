@@ -4,14 +4,20 @@ import androidx.navigation.NavGraphBuilder
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.composable
 import com.moyeota.core.designsystem.component.MoyeotaTab
+import com.moyeota.driver.domain.location.DriverLocationSource
 import com.moyeota.driver.domain.repository.DriverRepository
 import com.moyeota.driver.presentation.core.Routes
 
 // GRP/B 홈 · 영업 상태 — D06(휴무)·D07(영업중)은 Routes.HOME 상태 분기, D08은 별도 라우트.
-fun NavGraphBuilder.homeGraph(navController: NavHostController, repository: DriverRepository) {
+fun NavGraphBuilder.homeGraph(
+    navController: NavHostController,
+    repository: DriverRepository,
+    locationSource: DriverLocationSource,
+) {
     composable(Routes.HOME) { // D06 · D07
         HomeRoute(
             repository = repository,
+            locationSource = locationSource,
             onTabSelect = { tab -> navController.navigateToTab(tab) },
             onNavigateOffDutyConfirm = { navController.navigate(Routes.HOME_OFF_DUTY_CONFIRM) },
             onNavigateCallList = { navController.navigate(Routes.CALL_LIST) },

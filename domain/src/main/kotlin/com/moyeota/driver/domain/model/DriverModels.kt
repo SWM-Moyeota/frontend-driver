@@ -91,11 +91,24 @@ data class RouteStop(
 
 enum class StopKind { PICKUP, DROPOFF }
 
+/**
+ * 장소 좌표 (출발지·도착지 등 지도 표시용).
+ * DriverCoordinate 는 "기사 단말의 현재 위치" 의미라 재사용하지 않는다 — 장소 좌표는 별도 타입.
+ */
+data class GeoPoint(
+    val latitude: Double,
+    val longitude: Double,
+)
+
 data class CallDetail(
     val summary: CallSummary,
     val stops: List<RouteStop>,
     val countdownSeconds: Int,            // 수락 가능 시간 (기본 15초)
     val etaToPickupMin: Int,
+    /** 출발지(픽업) 좌표 — null 이면 서버가 좌표 미제공 (화면은 기본 카메라 폴백) */
+    val departurePoint: GeoPoint? = null,
+    /** 도착지(하차) 좌표 — null 이면 서버가 좌표 미제공 (마커 생략) */
+    val destinationPoint: GeoPoint? = null,
 )
 
 data class MissedCall(

@@ -20,24 +20,28 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import com.moyeota.core.designsystem.component.MoyeotaDefaultCamera
 import com.moyeota.core.designsystem.component.NaverMapView
-import com.moyeota.driver.presentation.core.GangnamCenter
 import com.moyeota.core.designsystem.component.NoticeBanner
 import com.moyeota.core.designsystem.component.NoticeKind
 import com.moyeota.core.designsystem.component.PrimaryCtaButton
@@ -48,12 +52,16 @@ import com.moyeota.driver.domain.model.CallDetail
 import com.moyeota.driver.domain.model.CallException
 import com.moyeota.driver.domain.model.CallSummary
 import com.moyeota.driver.domain.model.CallType
+import com.moyeota.driver.domain.model.GeoPoint
 import com.moyeota.driver.domain.model.RouteStop
 import com.moyeota.driver.domain.model.StopKind
 import com.moyeota.driver.domain.repository.DriverRepository
 import com.moyeota.driver.presentation.core.BackStateScaffold
 import com.moyeota.driver.presentation.core.ErrorBox
 import com.moyeota.driver.presentation.core.LoadingBox
+import com.naver.maps.geometry.LatLng
+import com.naver.maps.map.NaverMap
+import com.naver.maps.map.overlay.Marker
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -261,7 +269,11 @@ private fun CallDetailScreen(
                     .height(140.dp)
                     .clip(RoundedCornerShape(14.dp)),
             ) {
-                NaverMapView(modifier = Modifier.fillMaxSize(), center = GangnamCenter)
+                CallRouteMap(
+                    departure = detail.departurePoint,
+                    destination = detail.destinationPoint,
+                    modifier = Modifier.fillMaxSize(),
+                )
                 Box(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
@@ -341,6 +353,82 @@ private fun CallDetailScreen(
             onDecline = onDecline,
         )
     }
+}
+
+/**
+ * D10 콜 상세 지도 — 매칭방 출발지(픽업)·도착지(하차) 좌표를 마커로 표시한다.
+ *
+ * - 두 좌표가 다 있으면 중점을 카메라 중심으로, 줌은 두 점 거리에 맞춰 잡는다
+ * - 출발지만 있으면 출발지 중심, 둘 다 없으면 기본 카메라(서면) 폴백
+ * - 좌표가 없는 마커는 생략한다 (서버가 좌표를 안 준 파티)
+ */
+@Composable
+private fun CallRouteMap(
+    departure: GeoPoint?,
+    destination: GeoPoint?,
+    modifier: Modifier = Modifier,
+) {
+    val pickup = departure?.let { LatLng(it.latitude, it.longitude) }
+    val dropoff = destination?.let { LatLng(it.latitude, it.longitude) }
+
+    val (center, zoom) = when {
+        pickup != null && dropoff != null -> LatLng(
+            (pickup.latitude + dropoff.latitude) / 2,
+            (pickup.longitude + dropoff.longitude) / 2,
+        ) to zoomFor(pickup.distanceTo(dropoff))
+        pickup != null -> pickup to 14.0
+        else -> MoyeotaDefaultCamera to 14.0
+    }
+
+    // HomeMyLocationMap 과 같은 패턴 — onMapReady 로 지도 참조를 상태로 잡아
+    // 지도 준비와 상세 데이터 갱신 중 어느 쪽이 먼저 와도 마커가 최신 좌표를 가리키게 한다
+    var map by remember { mutableStateOf<NaverMap?>(null) }
+    // Marker 를 remember 로 재사용 — LaunchedEffect 재실행 시 중복 생성이 없다
+    val pickupMarker = remember { Marker() }
+    val dropoffMarker = remember { Marker() }
+    val pickupTint = MoyeotaColor.MarkerPickup.toArgb()
+    val dropoffTint = MoyeotaColor.MarkerDropoff.toArgb()
+
+    NaverMapView(
+        modifier = modifier,
+        center = center,
+        zoom = zoom,
+        onMapReady = { map = it },
+    )
+
+    LaunchedEffect(map, pickup, dropoff) {
+        val naverMap = map ?: return@LaunchedEffect
+        pickupMarker.attachTo(naverMap, pickup, pickupTint)
+        dropoffMarker.attachTo(naverMap, dropoff, dropoffTint)
+    }
+
+    // 지도 dispose 시 마커 참조 정리 (NaverMapView 가 내부 map=null 로 되돌리는 패턴에 맞춘다)
+    DisposableEffect(Unit) {
+        onDispose {
+            pickupMarker.map = null
+            dropoffMarker.map = null
+        }
+    }
+}
+
+/** 좌표가 있으면 지도에 부착·갱신, 없으면 떼어낸다 */
+private fun Marker.attachTo(naverMap: NaverMap, point: LatLng?, tint: Int) {
+    if (point == null) {
+        map = null
+        return
+    }
+    position = point
+    iconTintColor = tint
+    map = naverMap
+}
+
+/** 픽업↔하차 직선 거리(m)에 맞는 대략적 줌 — 140dp 지도에서 두 마커가 함께 보이는 수준이면 충분 */
+private fun zoomFor(distanceMeters: Double): Double = when {
+    distanceMeters < 1_000 -> 14.0
+    distanceMeters < 3_000 -> 12.5
+    distanceMeters < 8_000 -> 11.5
+    distanceMeters < 20_000 -> 10.0
+    else -> 8.5
 }
 
 /**
