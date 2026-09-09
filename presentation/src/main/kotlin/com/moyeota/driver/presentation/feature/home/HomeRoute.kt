@@ -3,7 +3,6 @@ package com.moyeota.driver.presentation.feature.home
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.produceState
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.compose.LifecycleResumeEffect
@@ -18,8 +17,7 @@ import com.moyeota.driver.domain.repository.DriverRepository
 import com.moyeota.driver.presentation.core.ErrorBox
 import com.moyeota.driver.presentation.core.LoadingBox
 import com.moyeota.driver.presentation.core.TabStateScaffold
-import com.naver.maps.geometry.LatLng
-import kotlinx.coroutines.delay
+import com.moyeota.driver.presentation.core.rememberDriverLocation
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -121,14 +119,8 @@ fun HomeRoute(
     val viewModel: HomeViewModel = viewModel(factory = HomeViewModel.factory(repository))
     val uiState by viewModel.uiState.collectAsState()
 
-    // 홈이 떠 있는 동안 단말 측위 캐시를 주기 폴링한다 — current() 는 즉시 반환(구독 캐시 +
-    // lastKnown 폴백)이라 부담이 없고, 권한 미허용·측위 전이면 null 이 유지된다.
-    val myLocation by produceState<LatLng?>(initialValue = null, locationSource) {
-        while (true) {
-            value = locationSource.current()?.let { LatLng(it.latitude, it.longitude) }
-            delay(5_000)
-        }
-    }
+    // 홈이 떠 있는 동안 단말 측위 캐시를 5초 폴링 — 운행 화면(D13·D15)과 공용 헬퍼
+    val myLocation by rememberDriverLocation(locationSource)
 
     // 콜 상세에서 거절·만료로 돌아오면 인입 콜 수가 달라져 있다 — 복귀 시마다 다시 읽는다
     LifecycleResumeEffect(Unit) {

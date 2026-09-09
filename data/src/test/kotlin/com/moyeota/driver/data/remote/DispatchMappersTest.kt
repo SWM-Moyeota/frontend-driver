@@ -141,6 +141,33 @@ class DispatchMappersTest {
         assertEquals(DispatchRules.POOL_BONUS, trip.poolBonus)
     }
 
+    @Test
+    fun `ActiveTrip - 출발·도착 좌표를 GeoPoint 로 매핑한다`() {
+        val trip = poolParty.toActiveTrip(vehicleInfoLabel = "쏘나타 34가 1234")
+
+        assertEquals(GeoPoint(37.4980, 127.0276), trip.departurePoint)
+        assertEquals(GeoPoint(37.3948, 127.1112), trip.destinationPoint)
+    }
+
+    @Test
+    fun `ActiveTrip - 좌표 미제공이면 GeoPoint 는 null`() {
+        val trip = PartySummaryDto(id = 7L).toActiveTrip(vehicleInfoLabel = "쏘나타 34가 1234")
+
+        assertNull(trip.departurePoint)
+        assertNull(trip.destinationPoint)
+    }
+
+    @Test
+    fun `ActiveTrip - 위경도 중 한쪽만 있으면 null (반쪽 좌표 방어)`() {
+        val trip = poolParty.copy(
+            departureLongitude = null,     // 출발지: 위도만 존재
+            destinationLatitude = null,    // 도착지: 경도만 존재
+        ).toActiveTrip(vehicleInfoLabel = "쏘나타 34가 1234")
+
+        assertNull(trip.departurePoint)
+        assertNull(trip.destinationPoint)
+    }
+
     // ── 요금 계산 ──────────────────────────────────────────────────────
 
     @Test

@@ -30,6 +30,7 @@ import com.moyeota.core.designsystem.component.PrimaryCtaButton
 import com.moyeota.core.designsystem.component.StatusBarMock
 import com.moyeota.core.designsystem.theme.MoyeotaColor
 import com.moyeota.core.designsystem.theme.MoyeotaType
+import com.moyeota.driver.domain.location.DriverLocationSource
 import com.moyeota.driver.domain.model.ActiveTrip
 import com.moyeota.driver.domain.model.StopKind
 import com.moyeota.driver.domain.model.TripPassenger
@@ -38,6 +39,8 @@ import com.moyeota.driver.domain.repository.DriverRepository
 import com.moyeota.driver.presentation.core.ErrorBox
 import com.moyeota.driver.presentation.core.LoadingBox
 import com.moyeota.driver.presentation.core.Routes
+import com.moyeota.driver.presentation.core.rememberDriverLocation
+import com.naver.maps.geometry.LatLng
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -108,9 +111,15 @@ class DrivingViewModel(private val repository: DriverRepository) : ViewModel() {
 }
 
 @Composable
-fun DrivingRoute(navController: NavHostController, repository: DriverRepository) {
+fun DrivingRoute(
+    navController: NavHostController,
+    repository: DriverRepository,
+    locationSource: DriverLocationSource,
+) {
     val viewModel: DrivingViewModel = viewModel(factory = DrivingViewModel.factory(repository))
     val state by viewModel.uiState.collectAsState()
+    // 운행 중 지도에 내 위치 오버레이 — 홈과 같은 5초 폴링
+    val myLocation by rememberDriverLocation(locationSource)
 
     BackHandler { /* 운행 플로우 — 뒤로가기 차단 */ }
     KeepScreenOn()
@@ -130,6 +139,7 @@ fun DrivingRoute(navController: NavHostController, repository: DriverRepository)
         is DrivingViewModel.UiState.Error -> ErrorBox(message = s.message, onRetry = viewModel::refresh)
         is DrivingViewModel.UiState.Success -> DrivingScreen(
             trip = s.trip,
+            myLocation = myLocation,
             processing = s.processing,
             actionError = s.actionError,
             onDropoff = viewModel::completeDropoff,
@@ -140,6 +150,7 @@ fun DrivingRoute(navController: NavHostController, repository: DriverRepository)
 @Composable
 private fun DrivingScreen(
     trip: ActiveTrip,
+    myLocation: LatLng?,
     processing: Boolean,
     actionError: String?,
     onDropoff: (passengerId: String) -> Unit,
@@ -196,9 +207,12 @@ private fun DrivingScreen(
                 )
             }
 
-            // 내비 — 경유 순서 · 실시간 경로
+            // 내비 — 출발·하차 두 지점 조망 + 내 위치
             TripMap(
                 pillText = "${formatKm(trip.remainingKm)} · ${trip.remainingMin}분 남음",
+                departure = trip.departurePoint,
+                destination = trip.destinationPoint,
+                myLocation = myLocation,
                 modifier = Modifier.weight(1f).fillMaxWidth(),
             )
 
