@@ -58,7 +58,7 @@ fun MainNavGraph(
         authGraph(navController, repository)
         homeGraph(navController, repository, locationSource)
         callGraph(navController, repository)
-        tripGraph(navController, repository)
+        tripGraph(navController, repository, locationSource)
         settlementGraph(navController, repository)
         historyGraph(navController, repository)
     }

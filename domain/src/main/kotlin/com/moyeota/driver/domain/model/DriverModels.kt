@@ -157,6 +157,10 @@ data class ActiveTrip(
     val remainingMin: Int,
     val vehicleInfoLabel: String,         // "쏘나타 34가 1234"
     val poolBonus: Int,
+    /** 출발지(픽업) 좌표 — null 이면 서버가 좌표 미제공 (D13·D15 지도는 기본 카메라 폴백) */
+    val departurePoint: GeoPoint? = null,
+    /** 도착지(하차) 좌표 — null 이면 서버가 좌표 미제공 (마커 생략, D13 은 원래 미사용) */
+    val destinationPoint: GeoPoint? = null,
 )
 
 /** D16 요금 확정 결과. 기사 정산액 = 승객 청구 총액 − 서비스 수수료(5%) ± 보너스·차감 */

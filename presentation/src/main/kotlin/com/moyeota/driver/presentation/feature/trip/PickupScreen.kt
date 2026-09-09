@@ -32,12 +32,15 @@ import com.moyeota.core.designsystem.component.SecondaryButton
 import com.moyeota.core.designsystem.component.StatusBarMock
 import com.moyeota.core.designsystem.theme.MoyeotaColor
 import com.moyeota.core.designsystem.theme.MoyeotaType
+import com.moyeota.driver.domain.location.DriverLocationSource
 import com.moyeota.driver.domain.model.ActiveTrip
 import com.moyeota.driver.domain.model.StopKind
 import com.moyeota.driver.domain.repository.DriverRepository
 import com.moyeota.driver.presentation.core.ErrorBox
 import com.moyeota.driver.presentation.core.LoadingBox
 import com.moyeota.driver.presentation.core.Routes
+import com.moyeota.driver.presentation.core.rememberDriverLocation
+import com.naver.maps.geometry.LatLng
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -89,9 +92,15 @@ class PickupViewModel(private val repository: DriverRepository) : ViewModel() {
 }
 
 @Composable
-fun PickupRoute(navController: NavHostController, repository: DriverRepository) {
+fun PickupRoute(
+    navController: NavHostController,
+    repository: DriverRepository,
+    locationSource: DriverLocationSource,
+) {
     val viewModel: PickupViewModel = viewModel(factory = PickupViewModel.factory(repository))
     val state by viewModel.uiState.collectAsState()
+    // 픽업지로 가는 동안 지도에 내 위치 오버레이 — 홈과 같은 5초 폴링
+    val myLocation by rememberDriverLocation(locationSource)
 
     BackHandler { /* 운행 플로우 — 뒤로가기 차단 */ }
     KeepScreenOn()
@@ -101,6 +110,7 @@ fun PickupRoute(navController: NavHostController, repository: DriverRepository) 
         is PickupViewModel.UiState.Error -> ErrorBox(message = s.message, onRetry = viewModel::refresh)
         is PickupViewModel.UiState.Success -> PickupScreen(
             trip = s.trip,
+            myLocation = myLocation,
             onArrived = {
                 // 도착 통보(승객 "기사 도착" 푸시)는 fire-and-forget — 실패해도 탑승 확인으로 진행
                 viewModel.notifyArrival(s.trip.id)
@@ -115,6 +125,7 @@ fun PickupRoute(navController: NavHostController, repository: DriverRepository) 
 @Composable
 private fun PickupScreen(
     trip: ActiveTrip,
+    myLocation: LatLng?,
     onArrived: () -> Unit,
 ) {
     val nextStop = trip.stops.getOrNull(trip.nextStopIndex)
@@ -157,9 +168,12 @@ private fun PickupScreen(
                 }
             }
 
-            // 내비 — 픽업지까지 경로 · 실시간 위치
+            // 내비 — 픽업지로 가는 중이라 픽업지 + 내 위치만 (하차 마커는 D15 에서)
             TripMap(
                 pillText = "${formatKm(trip.remainingKm)} · ${trip.remainingMin}분 남음",
+                departure = trip.departurePoint,
+                destination = null,
+                myLocation = myLocation,
                 modifier = Modifier.weight(1f).fillMaxWidth(),
             )
 
