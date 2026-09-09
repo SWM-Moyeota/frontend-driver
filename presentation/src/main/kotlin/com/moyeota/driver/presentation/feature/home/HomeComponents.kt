@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -23,7 +22,6 @@ import androidx.compose.ui.unit.dp
 import com.moyeota.core.designsystem.component.MoyeotaDefaultCamera
 import com.moyeota.core.designsystem.component.NaverMapView
 import com.moyeota.core.designsystem.theme.MoyeotaColor
-import com.moyeota.core.designsystem.theme.MoyeotaType
 import com.naver.maps.geometry.LatLng
 import com.naver.maps.map.NaverMap
 
@@ -68,30 +66,6 @@ internal fun HomeMyLocationMap(
     }
 }
 
-// 합승 프로모션 배너 — D06·D07 상시 노출, 탭하면 D22 프로모션 안내 (터치 타깃 60dp 이상)
-@Composable
-internal fun PromotionBanner(
-    text: String,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Box(
-        modifier = modifier
-            .fillMaxWidth()
-            .height(64.dp)
-            .clip(RoundedCornerShape(14.dp))
-            .background(MoyeotaColor.SurfaceSoft)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp),
-        contentAlignment = Alignment.CenterStart,
-    ) {
-        Text(
-            text = "🎁  $text",
-            style = MoyeotaType.BodyLg,
-            color = MoyeotaColor.TextBody,
-        )
-    }
-}
 
 // D07 상단 영업 토글 (46x26, 노브 20) — off 조작은 D08 확인 화면으로 위임
 @Composable

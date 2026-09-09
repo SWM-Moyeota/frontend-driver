@@ -34,7 +34,6 @@ internal fun HomeOffDutyScreen(
     myLocation: LatLng?,
     startingDuty: Boolean,
     onStartDuty: () -> Unit,
-    onPromotionClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -105,9 +104,5 @@ internal fun HomeOffDutyScreen(
             loading = startingDuty,
             modifier = Modifier.height(68.dp),
         )
-
-        summary.promotionBanner?.let { banner ->
-            PromotionBanner(text = banner, onClick = onPromotionClick)
-        }
     }
 }

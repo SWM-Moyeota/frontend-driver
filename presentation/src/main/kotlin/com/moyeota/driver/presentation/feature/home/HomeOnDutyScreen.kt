@@ -36,7 +36,6 @@ internal fun HomeOnDutyScreen(
     pendingCallCount: Int,
     onCallListClick: () -> Unit,
     onEndDutyClick: () -> Unit,
-    onPromotionClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -150,9 +149,5 @@ internal fun HomeOnDutyScreen(
             onClick = onEndDutyClick,
             modifier = Modifier.height(68.dp),
         )
-
-        summary.promotionBanner?.let { banner ->
-            PromotionBanner(text = banner, onClick = onPromotionClick)
-        }
     }
 }

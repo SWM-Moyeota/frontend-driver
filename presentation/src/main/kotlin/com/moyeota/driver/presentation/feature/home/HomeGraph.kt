@@ -21,7 +21,6 @@ fun NavGraphBuilder.homeGraph(
             onTabSelect = { tab -> navController.navigateToTab(tab) },
             onNavigateOffDutyConfirm = { navController.navigate(Routes.HOME_OFF_DUTY_CONFIRM) },
             onNavigateCallList = { navController.navigate(Routes.CALL_LIST) },
-            onNavigatePromotion = { navController.navigate(Routes.CALL_PROMOTION) },
         )
     }
     composable(Routes.HOME_OFF_DUTY_CONFIRM) { // D08
