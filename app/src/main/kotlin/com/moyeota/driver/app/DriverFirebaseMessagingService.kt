@@ -53,16 +53,25 @@ class DriverFirebaseMessagingService : FirebaseMessagingService() {
     }
 
     /**
-     * CALL_OPENED: 파티 상세를 조회해 콜 피드에 넣고(요약 확보) 알림을 띄운다.
-     * 상세 조회 실패(미로그인·이미 마감 등)여도 payload 의 출발/도착 텍스트로 알림은 표시한다.
+     * CALL_OPENED: 푸시 데이터로 임시 요약을 먼저 세운 뒤 파티 상세 조회로 확정하고 알림을 띄운다.
+     *
+     * 순서가 중요하다 — 화면 전환(CallAlertBus)보다 **먼저** [DriverRepository.seedCallPreview] 로 콜 피드를
+     * 채운다. 상세 조회는 네트워크 왕복(느릴 땐 수 초)이라 그것을 기다리면 콜 상세(D10)가 열리는 순간
+     * 보여줄 정보가 없고, 예전엔 그 공백을 더미 콜(강남역·판교역)이 메워 실제와 다른 콜이 떴다.
+     * 임시 요약은 푸시에 실려 온 실제 출발지·도착지·인원·예상 요금이라 상세 조회가 실패해도 정보가 남는다.
      */
     private fun onCallOpened(data: Map<String, String>) {
         val partyId = data["partyId"] ?: return
         val departure = data["departure"] ?: "출발지 미상"
         val destination = data["destination"] ?: "도착지 미상"
+        // 백엔드가 아직 안 보낼 수 있는 값 — 없으면 없는 대로 둔다(화면이 "합승"·"요금 확인 중"으로 표기)
+        val memberCount = data["memberCount"]?.trim()?.toIntOrNull()
+        val estimatedFare = data["estimatedFare"]?.trim()?.toIntOrNull()
+
+        val preview = repository.seedCallPreview(partyId, departure, destination, memberCount, estimatedFare)
 
         // 화면 자동 전환 신호를 **상세 조회보다 먼저** 보낸다 — 앱이 떠 있으면 네트워크 왕복을 기다리지 않고
-        // 콜 화면이 즉시 열리고, 상세는 그 화면이 자체 조회로 채운다(콜 TTL 이 짧아 1초가 아깝다).
+        // 콜 화면이 즉시 열리고, 위 임시 요약이 그 화면의 첫 정보가 된다(콜 TTL 이 짧아 1초가 아깝다).
         CallAlertBus.open(partyId, CallAlertSource.PUSH)
 
         // 포그라운드면 위 자동 전환이 곧 콜 화면을 띄우므로 알림은 생략한다 —
@@ -70,7 +79,7 @@ class DriverFirebaseMessagingService : FirebaseMessagingService() {
         val needsNotification = !(application as DriverApplication).isForeground
 
         messagingScope.launch {
-            val summary = runCatching { repository.handleCallOpened(partyId) }.getOrNull()
+            val summary = runCatching { repository.handleCallOpened(partyId) }.getOrNull() ?: preview
             // 앱이 백그라운드/종료 상태면 콜을 놓치지 않도록 full-screen intent 알림을 띄운다
             if (needsNotification) showCallNotification(partyId, departure, destination, summary)
         }
@@ -92,7 +101,9 @@ class DriverFirebaseMessagingService : FirebaseMessagingService() {
     ) {
         val body = buildString {
             append("출발 $departure → $destination")
-            if (summary != null) append(" · 예상 ${"%,d".format(summary.expectedTotal)}원")
+            // 인원·금액은 아는 것만 붙인다 — 임시 요약은 둘 다 비어 있을 수 있다
+            if (summary != null && summary.hasPassengerCount) append(" · 합승 ${summary.passengerCount}명")
+            if (summary != null && summary.hasFareEstimate) append(" · 예상 ${"%,d".format(summary.expectedTotal)}원")
         }
         // 탭 → MainActivity 에 partyId 전달 (콜 상세 D10 진입은 MainNavGraph 가 담당)
         val intent = Intent(this, MainActivity::class.java).apply {

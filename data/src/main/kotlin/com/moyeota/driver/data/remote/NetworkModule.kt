@@ -59,8 +59,11 @@ object NetworkModule {
 
     private fun baseOkHttpClient(): OkHttpClient =
         OkHttpClient.Builder()
-            .connectTimeout(5, TimeUnit.SECONDS)
-            .readTimeout(10, TimeUnit.SECONDS)
+            // 배포 서버(https://api.moyeota.p-e.kr)는 유휴 후 첫 요청 응답이 7~8초까지 걸린다(콜드 스타트).
+            // 5s/10s 로는 콜 상세 조회가 그 구간에서 통째로 타임아웃돼 콜 정보를 못 띄웠다.
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(20, TimeUnit.SECONDS)
+            .writeTimeout(20, TimeUnit.SECONDS)
             .addInterceptor(
                 HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BODY },
             )

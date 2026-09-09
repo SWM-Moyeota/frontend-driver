@@ -6,6 +6,7 @@ import com.moyeota.driver.data.remote.DispatchRules
 import com.moyeota.driver.data.remote.DriverApi
 import com.moyeota.driver.data.remote.auth.TokenStore
 import com.moyeota.driver.data.remote.calcFareResult
+import com.moyeota.driver.data.remote.pushCallSummary
 import com.moyeota.driver.data.remote.driverAccountStatus
 import com.moyeota.driver.data.remote.normalizePhoneNumber
 import com.moyeota.driver.data.remote.dto.CompleteRideRequestDto
@@ -23,6 +24,7 @@ import com.moyeota.driver.data.remote.toCallSummary
 import com.moyeota.driver.data.remote.toRegisterRequest
 import com.moyeota.driver.domain.model.ActiveTrip
 import com.moyeota.driver.domain.model.CallDetail
+import com.moyeota.driver.domain.model.CallException
 import com.moyeota.driver.domain.model.CallSummary
 import com.moyeota.driver.domain.model.DriverAccountStatus
 import com.moyeota.driver.domain.model.DriverSignUpForm
@@ -367,8 +369,29 @@ class RemoteDriverRepository(
     }
 
     /**
-     * CALL_OPENED 처리: GET /dispatch/calls/{partyId} → CallSummary → 콜 피드 추가.
-     * 실패(미로그인 401, 이미 마감 409 CALL_CLOSED, 네트워크)는 null — 알림은 payload 텍스트로 폴백한다.
+     * CALL_OPENED 푸시 데이터로 만든 임시 요약을 콜 피드에 즉시 넣는다 (네트워크 호출 없음).
+     * 실콜 id 는 숫자(partyId) — 그 밖의 id 는 더미 소속이라 피드에 넣지 않는다.
+     */
+    override fun seedCallPreview(
+        partyId: String,
+        departure: String?,
+        destination: String?,
+        memberCount: Int?,
+        estimatedFare: Int?,
+    ): CallSummary? {
+        if (partyId.toLongOrNull() == null) return null
+        return pushCallSummary(partyId, departure, destination, memberCount, estimatedFare)
+            .also { callFeed.add(it) }
+    }
+
+    override fun peekCallSummary(callId: String): CallSummary? = callFeed.find(callId)
+
+    /**
+     * CALL_OPENED 처리: GET /dispatch/calls/{partyId} → CallSummary → 콜 피드의 임시 요약을 확정값으로 교체.
+     *
+     * 실패해도 예외를 올리지 않는다(알림 표시용 보조 경로) — 대신 실패 종류로 피드 처리를 나눈다:
+     * - 409 CALL_CLOSED: 이 기사에게 더 이상 유효하지 않은 콜 → 임시 요약도 걷어낸다(죽은 콜을 목록에 남기지 않는다).
+     * - 401 · 네트워크: 콜 자체는 살아 있다 → 임시 요약을 남겨 목록·상세가 빈 화면이 되지 않게 한다.
      */
     override suspend fun handleCallOpened(partyId: String): CallSummary? {
         val id = partyId.toLongOrNull() ?: return null
@@ -379,6 +402,9 @@ class RemoteDriverRepository(
                 .also { callFeed.add(it) }
         } catch (e: CancellationException) {
             throw e
+        } catch (e: retrofit2.HttpException) {
+            if (e.code() == 409) callFeed.remove(partyId)
+            null
         } catch (_: Exception) {
             null
         }
@@ -418,7 +444,14 @@ class RemoteDriverRepository(
      */
     override suspend fun getCalls(): List<CallSummary> = callFeed.snapshot()
 
-    /** 실연동: GET /dispatch/calls/{partyId} (토큰 기반). callId 가 partyId(숫자)일 때만 — 더미 콜 id 는 위임 */
+    /**
+     * 실연동: GET /dispatch/calls/{partyId} (토큰 기반). callId 가 partyId(숫자)일 때만 — 더미 콜 id 는 위임.
+     *
+     * **실콜에서는 절대 더미로 강등하지 않는다.** 예전 구현은 실패를 삼키고 더미 콜 상세(강남역·판교역·김*진)를
+     * 돌려줬는데, 배포 서버 콜드 스타트 타임아웃이나 409 CALL_CLOSED 만으로도 기사 화면에 존재하지 않는
+     * 승객·목적지가 떴다 — 그 정보를 믿고 수락하면 실제와 다른 콜을 받는 셈이라 조용한 실패가 오답보다 낫다.
+     * 실패는 [callFailure] 가 사용자 문구로 바꿔 전파하고, 화면(D10)이 푸시 임시 요약 + 에러 배너로 처리한다.
+     */
     override suspend fun getCallDetail(callId: String): CallDetail {
         val partyId = callId.toLongOrNull() ?: return fallback.getCallDetail(callId)
         refreshLocation()   // 픽업 거리·ETA 를 실위치 기준으로 계산
@@ -427,7 +460,7 @@ class RemoteDriverRepository(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            fallback.getCallDetail(callId)
+            throw callFailure(e, "콜 정보를 불러오지 못했어요")
         }
     }
 
@@ -441,13 +474,17 @@ class RemoteDriverRepository(
         refreshLocation()   // 픽업까지 남은 거리·ETA 를 실위치 기준으로 계산
         val party = try {
             dispatchApi.getPartyDetail(partyId)
-        } catch (e: retrofit2.HttpException) {
-            throw closedCallOr(e, "콜 정보를 불러오지 못했어요")
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            throw callFailure(e, "콜 정보를 불러오지 못했어요")
         }
         try {
             dispatchApi.acceptCall(partyId)
-        } catch (e: retrofit2.HttpException) {
-            throw closedCallOr(e, "수락하지 못했어요")
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            throw callFailure(e, "수락하지 못했어요")
         }
         callFeed.remove(callId)   // 수락된 콜은 피드에서 소거 (콜 목록 재노출 방지)
         return party.toActiveTrip(vehicleInfoLabel, lastLatitude, lastLongitude)
@@ -462,23 +499,41 @@ class RemoteDriverRepository(
         val partyId = callId.toLongOrNull() ?: return fallback.declineCall(callId)
         try {
             dispatchApi.rejectCall(partyId)
-        } catch (e: retrofit2.HttpException) {
-            if (e.code() != 409) throw IllegalStateException("거절 처리에 실패했어요 · 잠시 후 다시 시도해 주세요", e)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // 이미 마감된 콜(409)의 거절은 성공으로 취급 — 그 밖의 실패만 화면에 올린다
+            if (!(e is retrofit2.HttpException && e.code() == 409)) {
+                throw callFailure(e, "거절 처리에 실패했어요")
+            }
         } finally {
             callFeed.remove(callId)   // 거절한 콜은 목록에서 즉시 내린다
         }
     }
 
     /**
-     * 콜 TTL 만료·타 기사 선점으로 콜이 닫힌 409(CALL_CLOSED)를 사용자 문구로 바꾼다.
-     * 서버 콜 TTL 이 짧아 수락 지연 시 흔하게 발생하므로, 일반 오류와 구분해 안내한다.
+     * 콜 조회·수락·거절 실패를 사용자 문구 + 재시도 가능 여부([CallException])로 바꾼다.
+     *
+     * - 409 CALL_CLOSED: 콜 TTL 만료·타 기사 선점. 서버 콜 TTL 이 짧아 흔하게 발생하므로 별도 문구로 안내한다.
+     * - 401 · 403: 토큰 재발급까지 실패한 상태 — 재시도 대신 재로그인이 필요하다.
+     * - 타임아웃 · 연결 실패(IOException): 배포 서버 콜드 스타트로 첫 요청이 느릴 때 발생 → 재시도 가치 있음.
      */
-    private fun closedCallOr(e: retrofit2.HttpException, fallbackMessage: String): IllegalStateException =
-        if (e.code() == 409) {
-            IllegalStateException("이미 마감된 콜이에요 · 다음 콜을 기다려 주세요", e)
-        } else {
-            IllegalStateException("$fallbackMessage · ${e.serverMessage() ?: "서버 오류(${e.code()})"}", e)
+    private fun callFailure(e: Throwable, fallbackMessage: String): CallException = when (e) {
+        is retrofit2.HttpException -> when (e.code()) {
+            409 -> CallException("이미 마감된 콜이에요 · 다음 콜을 기다려 주세요", CallException.Kind.CLOSED, e)
+            401, 403 -> CallException("기사 인증이 만료됐어요 · 다시 로그인해 주세요", CallException.Kind.UNAUTHORIZED, e)
+            else -> CallException(
+                "$fallbackMessage · ${e.serverMessage() ?: "서버 오류(${e.code()})"}",
+                CallException.Kind.SERVER,
+                e,
+            )
         }
+
+        is java.io.IOException ->
+            CallException("서버 응답이 늦어요 · 다시 시도해 주세요", CallException.Kind.NETWORK, e)
+
+        else -> CallException(fallbackMessage, CallException.Kind.SERVER, e)
+    }
 
     /** 백엔드 미구현 — 더미 위임 */
     override suspend fun getMissedCalls(): List<MissedCall> = fallback.getMissedCalls()

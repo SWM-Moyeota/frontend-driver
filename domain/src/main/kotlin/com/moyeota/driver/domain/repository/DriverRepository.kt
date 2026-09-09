@@ -62,6 +62,27 @@ interface DriverRepository {
      */
     suspend fun registerFcmToken(token: String)
 
+    /**
+     * CALL_OPENED 푸시 데이터(출발·도착·인원·예상 요금)로 만든 **임시 요약**을 콜 피드에 즉시 넣는다.
+     *
+     * 네트워크를 타지 않는 동기 함수인 이유: 푸시 수신 직후 곧바로 콜 상세(D10)로 화면이 전환되므로,
+     * 상세 조회(수 초가 걸릴 수 있다)를 기다려 피드에 넣으면 화면이 뜨는 순간 보여줄 정보가 없다.
+     * 이 임시 요약이 콜 리스트(D09)·홈 배너·콜 상세 헤더의 첫 화면을 채우고,
+     * [handleCallOpened] 가 서버 상세를 받아오면 확정 요약으로 교체된다.
+     *
+     * @return 피드에 넣은 임시 요약. 실콜이 아닌 id(숫자가 아닌 더미 id)면 null.
+     */
+    fun seedCallPreview(
+        partyId: String,
+        departure: String?,
+        destination: String?,
+        memberCount: Int?,
+        estimatedFare: Int?,
+    ): CallSummary?
+
+    /** 콜 피드에 들어 있는 요약(임시 또는 확정) — 상세 조회가 늦거나 실패했을 때 화면이 보여줄 최소 정보 */
+    fun peekCallSummary(callId: String): CallSummary?
+
     /** CALL_OPENED 수신 — 파티 상세를 조회해 콜 피드에 추가, 알림 표시용 요약 반환 (실패 시 null) */
     suspend fun handleCallOpened(partyId: String): CallSummary?
 
