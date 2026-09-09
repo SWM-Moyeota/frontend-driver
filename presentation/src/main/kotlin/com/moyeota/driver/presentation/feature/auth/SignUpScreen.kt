@@ -64,6 +64,11 @@ internal fun isValidPhone(digits: String): Boolean = PHONE_REGEX.matches(digits)
 
 internal fun isValidLoginId(loginId: String): Boolean = LOGIN_ID_REGEX.matches(loginId)
 
+/** 백엔드 Nickname 규칙: 2~10자, 한글·영문·숫자만 (중복은 서버가 검사 — 중복이면 가입 단계 에러 배너) */
+internal fun isValidNickname(value: String): Boolean = NICKNAME_REGEX.matches(value)
+
+private val NICKNAME_REGEX = Regex("^[가-힣a-zA-Z0-9]{2,10}$")
+
 /** 백엔드 규칙 동일 — 8~64자 + 영문 · 숫자 · 특수문자 각 1개 이상 */
 internal fun isValidPassword(password: String): Boolean =
     password.length in 8..64 &&
@@ -177,6 +182,7 @@ fun SignUpScreen(
     var phoneDigits by rememberSaveable { mutableStateOf("") }
     // 스텝 2 — 프로필
     var name by rememberSaveable { mutableStateOf("") }
+    var nickname by rememberSaveable { mutableStateOf("") }
     var loginId by rememberSaveable { mutableStateOf("") }
     var password by rememberSaveable { mutableStateOf("") }
     // 스텝 3 — 택시 정보
@@ -215,6 +221,8 @@ fun SignUpScreen(
                 2 -> ProfileStepFields(
                     name = name,
                     onNameChange = { name = it },
+                    nickname = nickname,
+                    onNicknameChange = { nickname = it.take(10) },
                     loginId = loginId,
                     onLoginIdChange = { input ->
                         loginId = input.lowercase()
@@ -261,7 +269,8 @@ fun SignUpScreen(
                 2 -> PrimaryCtaButton(
                     text = "다음",
                     onClick = { step = 3 },
-                    enabled = name.isNotBlank() && isValidLoginId(loginId) && isValidPassword(password),
+                    enabled = name.isNotBlank() && isValidNickname(nickname.trim()) &&
+                        isValidLoginId(loginId) && isValidPassword(password),
                 )
                 else -> {
                     if (state.submitError != null) {
@@ -276,6 +285,7 @@ fun SignUpScreen(
                                 DriverSignUpForm(
                                     phoneNumber = formatPhoneNumber(phoneDigits),
                                     name = name.trim(),
+                                    nickname = nickname.trim(),
                                     loginId = loginId,
                                     password = password,
                                     vehicleType = vehicleType.trim(),
@@ -341,6 +351,8 @@ private fun PhoneStepFields(
 private fun ProfileStepFields(
     name: String,
     onNameChange: (String) -> Unit,
+    nickname: String,
+    onNicknameChange: (String) -> Unit,
     loginId: String,
     onLoginIdChange: (String) -> Unit,
     password: String,
@@ -362,6 +374,17 @@ private fun ProfileStepFields(
         onValueChange = onNameChange,
         label = "이름",
         placeholder = "홍길동",
+        enabled = enabled,
+    )
+    MoyeotaTextField(
+        value = nickname,
+        onValueChange = onNicknameChange,
+        label = "닉네임",
+        placeholder = "번개기사",
+        helperText = "동승자에게 보이는 이름 · 2~10자 한글 · 영문 · 숫자",
+        errorText = if (nickname.isNotEmpty() && !isValidNickname(nickname.trim())) {
+            "2~10자의 한글 · 영문 · 숫자만 쓸 수 있어요"
+        } else null,
         enabled = enabled,
     )
     MoyeotaTextField(

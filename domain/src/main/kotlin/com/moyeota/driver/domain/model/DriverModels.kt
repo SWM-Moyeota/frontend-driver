@@ -15,7 +15,8 @@ data class LoginResult(
  */
 data class DriverSignUpForm(
     val phoneNumber: String,          // 1단계 입력 — user_profile 조회 키
-    val name: String,                 // 2단계 프로필
+    val name: String,                 // 2단계 프로필 (실명)
+    val nickname: String,             // 동승자에게 보이는 이름 (2~10자 한글·영문·숫자, 서버 중복 불가)
     val loginId: String,
     val password: String,
     val vehicleType: String,          // 3단계 — 차종
