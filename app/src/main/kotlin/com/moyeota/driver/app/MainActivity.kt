@@ -49,7 +49,11 @@ class MainActivity : ComponentActivity() {
         val container = (application as DriverApplication).appContainer
         setContent {
             MoyeotaTheme {
-                MainNavGraph(repository = container.driverRepository)
+                MainNavGraph(
+                    repository = container.driverRepository,
+                    // 홈 지도 카메라·내 위치 오버레이용 — presentation 은 domain 인터페이스로만 본다
+                    locationSource = container.locationSource,
+                )
             }
         }
     }

@@ -3,6 +3,7 @@ package com.moyeota.driver.presentation.feature.home
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.compose.LifecycleResumeEffect
@@ -10,12 +11,15 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.moyeota.core.designsystem.component.MoyeotaTab
+import com.moyeota.driver.domain.location.DriverLocationSource
 import com.moyeota.driver.domain.model.DutyStatus
 import com.moyeota.driver.domain.model.HomeSummary
 import com.moyeota.driver.domain.repository.DriverRepository
 import com.moyeota.driver.presentation.core.ErrorBox
 import com.moyeota.driver.presentation.core.LoadingBox
 import com.moyeota.driver.presentation.core.TabStateScaffold
+import com.naver.maps.geometry.LatLng
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -108,6 +112,7 @@ class HomeViewModel(private val repository: DriverRepository) : ViewModel() {
 @Composable
 fun HomeRoute(
     repository: DriverRepository,
+    locationSource: DriverLocationSource,
     onTabSelect: (MoyeotaTab) -> Unit,
     onNavigateOffDutyConfirm: () -> Unit,
     onNavigateCallList: () -> Unit,
@@ -115,6 +120,15 @@ fun HomeRoute(
 ) {
     val viewModel: HomeViewModel = viewModel(factory = HomeViewModel.factory(repository))
     val uiState by viewModel.uiState.collectAsState()
+
+    // 홈이 떠 있는 동안 단말 측위 캐시를 주기 폴링한다 — current() 는 즉시 반환(구독 캐시 +
+    // lastKnown 폴백)이라 부담이 없고, 권한 미허용·측위 전이면 null 이 유지된다.
+    val myLocation by produceState<LatLng?>(initialValue = null, locationSource) {
+        while (true) {
+            value = locationSource.current()?.let { LatLng(it.latitude, it.longitude) }
+            delay(5_000)
+        }
+    }
 
     // 콜 상세에서 거절·만료로 돌아오면 인입 콜 수가 달라져 있다 — 복귀 시마다 다시 읽는다
     LifecycleResumeEffect(Unit) {
@@ -129,6 +143,7 @@ fun HomeRoute(
             is HomeViewModel.UiState.Success -> when (state.summary.dutyStatus) {
                 DutyStatus.OFFLINE -> HomeOffDutyScreen(
                     summary = state.summary,
+                    myLocation = myLocation,
                     startingDuty = state.startingDuty,
                     onStartDuty = viewModel::startDuty,
                     onPromotionClick = onNavigatePromotion,
@@ -136,6 +151,7 @@ fun HomeRoute(
 
                 DutyStatus.ONLINE -> HomeOnDutyScreen(
                     summary = state.summary,
+                    myLocation = myLocation,
                     pendingCallCount = state.pendingCallCount,
                     onCallListClick = onNavigateCallList,
                     onEndDutyClick = onNavigateOffDutyConfirm,

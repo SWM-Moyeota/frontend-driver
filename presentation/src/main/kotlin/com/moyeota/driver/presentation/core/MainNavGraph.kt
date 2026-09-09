@@ -8,6 +8,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.moyeota.driver.domain.call.CallAlertBus
+import com.moyeota.driver.domain.location.DriverLocationSource
 import com.moyeota.driver.domain.repository.DriverRepository
 import com.moyeota.driver.presentation.feature.auth.authGraph
 import com.moyeota.driver.presentation.feature.call.callGraph
@@ -32,7 +33,10 @@ import com.moyeota.driver.presentation.feature.trip.tripGraph
  * - 같은 콜의 `call/detail/{callId}`: 이미 그 콜을 보고 있다.
  */
 @Composable
-fun MainNavGraph(repository: DriverRepository) {
+fun MainNavGraph(
+    repository: DriverRepository,
+    locationSource: DriverLocationSource,
+) {
     val navController = rememberNavController()
     val pendingCall by CallAlertBus.pending.collectAsState()
 
@@ -52,7 +56,7 @@ fun MainNavGraph(repository: DriverRepository) {
 
     NavHost(navController = navController, startDestination = Routes.AUTH_LOGIN) {
         authGraph(navController, repository)
-        homeGraph(navController, repository)
+        homeGraph(navController, repository, locationSource)
         callGraph(navController, repository)
         tripGraph(navController, repository)
         settlementGraph(navController, repository)

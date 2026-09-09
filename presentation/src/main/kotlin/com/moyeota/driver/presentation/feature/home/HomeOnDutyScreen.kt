@@ -18,19 +18,20 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
-import com.moyeota.core.designsystem.component.NaverMapView
-import com.moyeota.driver.presentation.core.GangnamCenter
 import com.moyeota.core.designsystem.component.NoticeKind
 import com.moyeota.core.designsystem.component.SecondaryButton
 import com.moyeota.core.designsystem.component.StatusBadge
 import com.moyeota.core.designsystem.theme.MoyeotaColor
 import com.moyeota.core.designsystem.theme.MoyeotaType
 import com.moyeota.driver.domain.model.HomeSummary
+import com.naver.maps.geometry.LatLng
 
 // D07 · 홈 — 영업중 · 콜 대기. 피그마 2514:559
 @Composable
 internal fun HomeOnDutyScreen(
     summary: HomeSummary,
+    /** 기사 현재 위치 — 측위 전이면 null (지도는 기본 카메라 폴백, 오버레이 숨김) */
+    myLocation: LatLng?,
     /** 아직 수락/거절하지 않은 실제 인입 콜 수 (데모 고정값 아님 — 0건이면 0으로 표시된다) */
     pendingCallCount: Int,
     onCallListClick: () -> Unit,
@@ -65,13 +66,13 @@ internal fun HomeOnDutyScreen(
             }
         }
 
-        // 지도 — 수요 많은 지역 · 내 위치 (수요 히트맵 상세는 미연결)
-        NaverMapView(
+        // 지도 — 현재 위치 중심 + 내 위치 오버레이 (수요 히트맵 상세는 미연결)
+        HomeMyLocationMap(
+            myLocation = myLocation,
             modifier = Modifier
                 .fillMaxWidth()
                 .height(252.dp)
                 .clip(RoundedCornerShape(14.dp)),
-            center = GangnamCenter,
         )
 
         // 지금 들어온 콜 카드 — 탭하면 콜 리스트(D09)
