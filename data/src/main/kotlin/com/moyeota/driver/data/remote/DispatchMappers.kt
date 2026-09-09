@@ -133,6 +133,8 @@ fun PartySummaryDto.toActiveTrip(
         remainingMin = etaMinFromDistance(summary.distanceToPickupKm),
         vehicleInfoLabel = vehicleInfoLabel,
         poolBonus = summary.poolBonus,
+        departurePoint = geoPointOrNull(departureLatitude, departureLongitude),
+        destinationPoint = geoPointOrNull(destinationLatitude, destinationLongitude),
     )
 }
 

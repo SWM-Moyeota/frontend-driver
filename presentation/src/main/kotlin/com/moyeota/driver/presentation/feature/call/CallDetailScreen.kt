@@ -40,7 +40,6 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
-import com.moyeota.core.designsystem.component.MoyeotaDefaultCamera
 import com.moyeota.core.designsystem.component.NaverMapView
 import com.moyeota.core.designsystem.component.NoticeBanner
 import com.moyeota.core.designsystem.component.NoticeKind
@@ -59,6 +58,8 @@ import com.moyeota.driver.domain.repository.DriverRepository
 import com.moyeota.driver.presentation.core.BackStateScaffold
 import com.moyeota.driver.presentation.core.ErrorBox
 import com.moyeota.driver.presentation.core.LoadingBox
+import com.moyeota.driver.presentation.core.attachTo
+import com.moyeota.driver.presentation.core.routeCamera
 import com.naver.maps.geometry.LatLng
 import com.naver.maps.map.NaverMap
 import com.naver.maps.map.overlay.Marker
@@ -370,15 +371,8 @@ private fun CallRouteMap(
 ) {
     val pickup = departure?.let { LatLng(it.latitude, it.longitude) }
     val dropoff = destination?.let { LatLng(it.latitude, it.longitude) }
-
-    val (center, zoom) = when {
-        pickup != null && dropoff != null -> LatLng(
-            (pickup.latitude + dropoff.latitude) / 2,
-            (pickup.longitude + dropoff.longitude) / 2,
-        ) to zoomFor(pickup.distanceTo(dropoff))
-        pickup != null -> pickup to 14.0
-        else -> MoyeotaDefaultCamera to 14.0
-    }
+    // 중점·거리 기반 줌 — D13/D15 TripMap 과 공용 (presentation/core routeCamera)
+    val (center, zoom) = routeCamera(pickup, dropoff)
 
     // HomeMyLocationMap 과 같은 패턴 — onMapReady 로 지도 참조를 상태로 잡아
     // 지도 준비와 상세 데이터 갱신 중 어느 쪽이 먼저 와도 마커가 최신 좌표를 가리키게 한다
@@ -409,26 +403,6 @@ private fun CallRouteMap(
             dropoffMarker.map = null
         }
     }
-}
-
-/** 좌표가 있으면 지도에 부착·갱신, 없으면 떼어낸다 */
-private fun Marker.attachTo(naverMap: NaverMap, point: LatLng?, tint: Int) {
-    if (point == null) {
-        map = null
-        return
-    }
-    position = point
-    iconTintColor = tint
-    map = naverMap
-}
-
-/** 픽업↔하차 직선 거리(m)에 맞는 대략적 줌 — 140dp 지도에서 두 마커가 함께 보이는 수준이면 충분 */
-private fun zoomFor(distanceMeters: Double): Double = when {
-    distanceMeters < 1_000 -> 14.0
-    distanceMeters < 3_000 -> 12.5
-    distanceMeters < 8_000 -> 11.5
-    distanceMeters < 20_000 -> 10.0
-    else -> 8.5
 }
 
 /**
