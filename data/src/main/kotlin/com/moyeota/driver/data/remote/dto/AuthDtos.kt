@@ -22,6 +22,7 @@ import kotlinx.serialization.Serializable
 data class UserRegisterRequestDto(
     val loginId: String,
     val password: String,
+    val nickname: String,
     val name: String,
     val birthDate: String,
     val phoneNumber: String,

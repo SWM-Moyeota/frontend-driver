@@ -24,6 +24,7 @@ class AuthMappersTest {
     private val form = DriverSignUpForm(
         phoneNumber = "01012345678",
         name = "박기사",
+        nickname = "번개기사",
         loginId = "driver01",
         password = "test123!@",
         vehicleType = "쏘나타",
@@ -115,9 +116,10 @@ class AuthMappersTest {
         val element = json.encodeToJsonElement(UserRegisterRequestDto.serializer(), form.toRegisterRequest())
         val keys = element.jsonObject.keys
         assertEquals(
-            setOf("loginId", "password", "name", "birthDate", "phoneNumber", "gender", "email"),
+            setOf("loginId", "password", "nickname", "name", "birthDate", "phoneNumber", "gender", "email"),
             keys,
         )
+        assertEquals("번개기사", element.jsonObject["nickname"]!!.jsonPrimitive.content)
         assertEquals("1990-01-01T00:00:00Z", element.jsonObject["birthDate"]!!.jsonPrimitive.content)
     }
 
