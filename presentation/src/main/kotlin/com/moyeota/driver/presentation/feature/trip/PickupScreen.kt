@@ -15,6 +15,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -27,6 +28,8 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import androidx.navigation.NavHostController
 import com.moyeota.core.designsystem.component.AvatarCircle
+import com.moyeota.core.designsystem.component.NoticeBanner
+import com.moyeota.core.designsystem.component.NoticeKind
 import com.moyeota.core.designsystem.component.PrimaryCtaButton
 import com.moyeota.core.designsystem.component.SecondaryButton
 import com.moyeota.core.designsystem.component.StatusBarMock
@@ -44,15 +47,23 @@ import com.naver.maps.geometry.LatLng
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 // D13 · 픽업 이동 — 네비게이션. 진입: D11 「픽업 안내 시작」.
+// 도착 시 「도착 · 운행 시작」 한 번으로 arrive(알림) + board(파티 단위)를 처리하고 D15 로 직행 (D14 제거).
 // 운행 플로우 공통: 뒤로가기 차단 + 화면 꺼짐 방지.
 
 class PickupViewModel(private val repository: DriverRepository) : ViewModel() {
     sealed interface UiState {
         data object Loading : UiState
-        data class Success(val trip: ActiveTrip) : UiState
+        data class Success(
+            val trip: ActiveTrip,
+            val starting: Boolean = false,     // startRide 진행 중 — CTA 로딩
+            val started: Boolean = false,      // startRide 성공 — D15 이동 트리거
+            val startError: String? = null,    // startRide 실패 — 배너 + 재시도
+        ) : UiState
+
         data class Error(val message: String) : UiState
     }
 
@@ -77,10 +88,28 @@ class PickupViewModel(private val repository: DriverRepository) : ViewModel() {
         }
     }
 
-    /** 도착 통보 — 알림 전용이라 결과를 UI 상태에 반영하지 않는다 (실패해도 플로우 진행) */
-    fun notifyArrival(tripId: String) {
+    /**
+     * 도착 · 운행 시작 — arrive 는 알림 전용(실패 무시), board 는 파티 단위 1회(실패 시 배너 + 재시도).
+     * 성공하면 started 로 전환해 Route 가 D15 로 이동한다.
+     */
+    fun startRide() {
+        val current = _uiState.value as? UiState.Success ?: return
+        if (current.starting || current.started) return
         viewModelScope.launch {
-            runCatching { repository.notifyPickupArrival(tripId) }
+            _uiState.update { (it as UiState.Success).copy(starting = true, startError = null) }
+            // 도착 통보(승객 "기사 도착" 푸시)는 fire-and-forget — 실패해도 운행 시작 진행
+            runCatching { repository.notifyPickupArrival(current.trip.id) }
+            try {
+                repository.startRide(current.trip.id)
+                _uiState.update { (it as UiState.Success).copy(starting = false, started = true) }
+            } catch (e: Exception) {
+                _uiState.update {
+                    (it as UiState.Success).copy(
+                        starting = false,
+                        startError = "운행을 시작하지 못했어요 · 다시 시도해 주세요",
+                    )
+                }
+            }
         }
     }
 
@@ -105,19 +134,25 @@ fun PickupRoute(
     BackHandler { /* 운행 플로우 — 뒤로가기 차단 */ }
     KeepScreenOn()
 
+    // 운행 시작(board) 성공 → D15 운행 중으로 직행 (D14 탑승 화면 제거)
+    val started = (state as? PickupViewModel.UiState.Success)?.started == true
+    LaunchedEffect(started) {
+        if (started) {
+            navController.navigate(Routes.TRIP_DRIVING) {
+                popUpTo(Routes.TRIP_PICKUP) { inclusive = true }
+            }
+        }
+    }
+
     when (val s = state) {
         is PickupViewModel.UiState.Loading -> LoadingBox()
         is PickupViewModel.UiState.Error -> ErrorBox(message = s.message, onRetry = viewModel::refresh)
         is PickupViewModel.UiState.Success -> PickupScreen(
             trip = s.trip,
             myLocation = myLocation,
-            onArrived = {
-                // 도착 통보(승객 "기사 도착" 푸시)는 fire-and-forget — 실패해도 탑승 확인으로 진행
-                viewModel.notifyArrival(s.trip.id)
-                navController.navigate(Routes.TRIP_BOARDING) {
-                    popUpTo(Routes.TRIP_PICKUP) { inclusive = true }
-                }
-            },
+            starting = s.starting,
+            startError = s.startError,
+            onStartRide = viewModel::startRide,
         )
     }
 }
@@ -126,11 +161,13 @@ fun PickupRoute(
 private fun PickupScreen(
     trip: ActiveTrip,
     myLocation: LatLng?,
-    onArrived: () -> Unit,
+    starting: Boolean,
+    startError: String?,
+    onStartRide: () -> Unit,
 ) {
     val nextStop = trip.stops.getOrNull(trip.nextStopIndex)
         ?: trip.stops.first { it.kind == StopKind.PICKUP }
-    val activePassengers = trip.passengers.filter { !it.noShow }
+    val passengers = trip.passengers
 
     Column(modifier = Modifier.fillMaxSize().background(MoyeotaColor.SurfaceCanvas)) {
         StatusBarMock()
@@ -177,7 +214,7 @@ private fun PickupScreen(
                 modifier = Modifier.weight(1f).fillMaxWidth(),
             )
 
-            // 승객 행 — 안심번호·메시지 미연결이라 표시 전용
+            // 승객 요약 카드 — 파티 단위 탑승이라 인원 요약만 (승객별 항목 없음). 표시 전용
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -190,13 +227,13 @@ private fun PickupScreen(
                 Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         val nameLabel = when {
-                            activePassengers.isEmpty() -> "승객 없음"
-                            activePassengers.size == 1 -> activePassengers.first().maskedName
-                            else -> "${activePassengers.first().maskedName} 외 ${activePassengers.size - 1}명"
+                            passengers.isEmpty() -> "승객 없음"
+                            passengers.size == 1 -> passengers.first().maskedName
+                            else -> "${passengers.first().maskedName} 외 ${passengers.size - 1}명"
                         }
                         Text(text = nameLabel, style = MoyeotaType.HeadingLg, color = MoyeotaColor.InkPrimary)
                         Text(
-                            text = "승객 ${activePassengers.size}",
+                            text = "승객 ${passengers.size}명 대기 중",
                             style = MoyeotaType.BodySm,
                             color = MoyeotaColor.TextMute,
                             modifier = Modifier
@@ -211,9 +248,14 @@ private fun PickupScreen(
                     )
                 }
             }
+
+            // 운행 시작 실패 — CTA 위 에러 배너 (버튼 재탭으로 재시도)
+            if (startError != null) {
+                NoticeBanner(kind = NoticeKind.ERROR, text = startError)
+            }
         }
 
-        // 하단 CTA — 좌: 승객 연락(안심번호·메시지 미연결, 비활성), 우: 도착 · 탑승 확인
+        // 하단 CTA — 좌: 승객 연락(안심번호·메시지 미연결, 비활성), 우: 도착 · 운행 시작 (arrive + board → D15)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -228,8 +270,9 @@ private fun PickupScreen(
                 modifier = Modifier.weight(1f).height(60.dp),
             )
             PrimaryCtaButton(
-                text = "도착 · 탑승 확인",
-                onClick = onArrived,
+                text = "도착 · 운행 시작",
+                onClick = onStartRide,
+                loading = starting,
                 modifier = Modifier.weight(2f).height(60.dp),
             )
         }
