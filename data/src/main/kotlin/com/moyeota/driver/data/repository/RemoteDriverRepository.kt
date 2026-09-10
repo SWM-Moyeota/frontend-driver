@@ -36,6 +36,7 @@ import com.moyeota.driver.domain.model.Promotion
 import com.moyeota.driver.domain.model.QualificationCheckResult
 import com.moyeota.driver.domain.model.RatingSummary
 import com.moyeota.driver.domain.model.SettlementDetail
+import com.moyeota.driver.domain.model.StopKind
 import com.moyeota.driver.domain.model.TripHistoryDetail
 import com.moyeota.driver.domain.model.TripHistoryItem
 import com.moyeota.driver.domain.model.TripPhase
@@ -546,23 +547,21 @@ class RemoteDriverRepository(
     override suspend fun getActiveTrip(): ActiveTrip? = remoteTrip ?: fallback.getActiveTrip()
 
     /**
-     * 실연동: POST /dispatch/rides/{partyId}/board/{driverId}.
-     * 서버는 파티 단위 board 1회(전원 탑승 → IN_RIDE)만 지원하므로 첫 탑승 확인 시에만 서버를 호출하고,
-     * 승객별 탑승 체크는 로컬 상태 전이로 처리한다.
+     * 실연동: POST /dispatch/rides/{partyId}/board — 파티 단위 1회 호출로 전원 탑승(IN_RIDE) 처리.
+     * 성공 시 remote trip 을 전원 boarded + 운행 중(IN_TRIP, 서버 IN_RIDE 대응)으로 전환하고,
+     * nextStopIndex 를 첫 하차 스톱으로 옮긴다 (픽업 스톱은 모두 지나갔다).
+     * 상태 전이 액션 — 실운행 실패는 예외 전파 (화면 유지 + 재시도).
      */
-    override suspend fun confirmBoarding(tripId: String, passengerId: String): ActiveTrip {
+    override suspend fun startRide(tripId: String): ActiveTrip {
         val trip = remoteTrip
-        if (trip == null || trip.id != tripId) return fallback.confirmBoarding(tripId, passengerId)
+        if (trip == null || trip.id != tripId) return fallback.startRide(tripId)
         val partyId = requireNotNull(tripId.toLongOrNull()) { "remote trip id 는 partyId 여야 합니다: $tripId" }
-        if (trip.passengers.none { it.boarded }) {
-            dispatchApi.board(partyId)
-        }
-        val passengers = trip.passengers.map { if (it.id == passengerId) it.copy(boarded = true) else it }
-        val phase = if (passengers.all { it.boarded || it.noShow }) TripPhase.IN_TRIP else TripPhase.BOARDING
+        dispatchApi.board(partyId)
+        val firstDropoff = trip.stops.indexOfFirst { it.kind == StopKind.DROPOFF }
         return trip.copy(
-            passengers = passengers,
-            phase = phase,
-            nextStopIndex = (trip.nextStopIndex + 1).coerceAtMost(trip.stops.lastIndex),
+            passengers = trip.passengers.map { it.copy(boarded = true) },
+            phase = TripPhase.IN_TRIP,
+            nextStopIndex = if (firstDropoff >= 0) firstDropoff else trip.nextStopIndex,
         ).also { remoteTrip = it }
     }
 
@@ -579,27 +578,6 @@ class RemoteDriverRepository(
         } catch (_: Exception) {
             // 알림 트리거 실패는 무시 — 탑승 확인 플로우 우선
         }
-    }
-
-    /** 백엔드 미구현(노쇼 API 없음) — remote trip 은 로컬 전이, 그 외 더미 위임 */
-    override suspend fun markNoShow(tripId: String, passengerId: String): ActiveTrip {
-        val trip = remoteTrip
-        if (trip == null || trip.id != tripId) return fallback.markNoShow(tripId, passengerId)
-        val passengers = trip.passengers.map { if (it.id == passengerId) it.copy(noShow = true) else it }
-        return trip.copy(passengers = passengers).also { remoteTrip = it }
-    }
-
-    /** 백엔드 미구현(개별 하차 API 없음 — 종료는 complete 1회) — remote trip 은 로컬 전이, 그 외 더미 위임 */
-    override suspend fun completeDropoff(tripId: String, passengerId: String): ActiveTrip {
-        val trip = remoteTrip
-        if (trip == null || trip.id != tripId) return fallback.completeDropoff(tripId, passengerId)
-        val passengers = trip.passengers.map { if (it.id == passengerId) it.copy(droppedOff = true) else it }
-        val allDone = passengers.all { it.droppedOff || it.noShow }
-        return trip.copy(
-            passengers = passengers,
-            phase = if (allDone) TripPhase.FARE_INPUT else TripPhase.IN_TRIP,
-            nextStopIndex = (trip.nextStopIndex + 1).coerceAtMost(trip.stops.lastIndex),
-        ).also { remoteTrip = it }
     }
 
     /**

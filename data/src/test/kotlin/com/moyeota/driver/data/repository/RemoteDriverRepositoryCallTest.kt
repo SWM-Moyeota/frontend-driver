@@ -22,6 +22,8 @@ import com.moyeota.driver.data.remote.dto.UserRegisterRequestDto
 import com.moyeota.driver.data.remote.dto.UserResponseDto
 import com.moyeota.driver.domain.model.CallException
 import com.moyeota.driver.domain.model.CallType
+import com.moyeota.driver.domain.model.StopKind
+import com.moyeota.driver.domain.model.TripPhase
 import kotlinx.coroutines.runBlocking
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.ResponseBody.Companion.toResponseBody
@@ -199,6 +201,39 @@ class RemoteDriverRepositoryCallTest {
         assertTrue(repository.getCalls().isEmpty())
     }
 
+    // ── 운행 시작 (파티 단위 board) ───────────────────────────────────
+
+    @Test
+    fun `startRide 는 서버 board 1회로 전원 탑승·운행 중 단계로 전환한다`() = runBlocking {
+        var boardCount = 0
+        val repository = repository(
+            FakeDispatchApi(onAccept = {}, onBoard = { boardCount++ }) { partyDto },
+        )
+        val trip = repository.acceptCall("42")
+
+        val started = repository.startRide(trip.id)
+
+        assertEquals("파티 단위 board — 1회 호출", 1, boardCount)
+        assertEquals(TripPhase.IN_TRIP, started.phase)
+        assertTrue("승객별 탑승 없이 전원 일괄 탑승", started.passengers.all { it.boarded })
+        assertEquals("다음 스톱은 첫 하차지", StopKind.DROPOFF, started.stops[started.nextStopIndex].kind)
+    }
+
+    @Test
+    fun `startRide 실패는 예외 전파 - 더미 강등 금지`() = runBlocking {
+        val repository = repository(
+            FakeDispatchApi(onAccept = {}, onBoard = { throw httpException(409, "NOT_AWAITING_PICKUP") }) { partyDto },
+        )
+        repository.acceptCall("42")
+
+        try {
+            repository.startRide("42")
+            fail("board 실패는 예외로 올라와야 한다 — 상태 전이 액션은 화면 유지 + 재시도")
+        } catch (e: HttpException) {
+            assertEquals(409, e.code())
+        }
+    }
+
     // ── 도우미 ────────────────────────────────────────────────────────
 
     private inline fun assertCallFailure(block: () -> Unit): CallException {
@@ -219,19 +254,24 @@ class RemoteDriverRepositoryCallTest {
     )
 }
 
-/** getPartyDetail 만 시나리오별로 바꿔 끼우는 가짜 dispatch API — 나머지는 이 테스트에서 쓰지 않는다 */
+/**
+ * getPartyDetail(+운행 시나리오에선 accept/board)만 시나리오별로 바꿔 끼우는 가짜 dispatch API —
+ * 나머지는 이 테스트에서 쓰지 않는다.
+ */
 private class FakeDispatchApi(
+    private val onAccept: () -> Unit = { unused() },
+    private val onBoard: () -> Unit = { unused() },
     private val partyDetail: () -> PartySummaryDto,
 ) : DispatchApi {
     override suspend fun goOnline(body: LocationReportRequestDto) = unused()
     override suspend fun goOffline() = unused()
     override suspend fun reportLocation(body: LocationReportRequestDto) = unused()
-    override suspend fun acceptCall(partyId: Long) = unused()
+    override suspend fun acceptCall(partyId: Long) = onAccept()
     override suspend fun rejectCall(partyId: Long) = unused()
     override suspend fun callStatus(partyId: Long): CallStatusResponseDto = unused()
     override suspend fun getPartyDetail(partyId: Long): PartySummaryDto = partyDetail()
     override suspend fun arrive(partyId: Long) = unused()
-    override suspend fun board(partyId: Long) = unused()
+    override suspend fun board(partyId: Long) = onBoard()
     override suspend fun complete(partyId: Long, body: CompleteRideRequestDto) = unused()
 }
 

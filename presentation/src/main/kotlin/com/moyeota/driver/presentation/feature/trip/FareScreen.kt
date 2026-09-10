@@ -57,7 +57,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 // D16 · 최종 요금 입력 · 운행 완료 (+ D16b 미터기 금액 입력 키패드 — 화면 내부 전환 뷰).
-// 진입: D15 마지막 승객 하차 처리. 확정 후 HOME 복귀(운행 스택 전부 제거).
+// 진입: D15 「운행 완료」. 확정 후 HOME 복귀(운행 스택 전부 제거).
 // 운행 완료 후 요금 입력은 필수 단계 — 뒤로가기 차단.
 
 /** 호출료 — 더미 리포지토리 기준값. 실서버 연동 시 FareResult(서버 계산)로 대체한다. */

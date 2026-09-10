@@ -251,32 +251,15 @@ class DummyDriverRepository : DriverRepository {
         delay(100)
     }
 
-    override suspend fun confirmBoarding(tripId: String, passengerId: String): ActiveTrip {
+    /** 서버 board(파티 단위 1회)와 동일하게 전원 탑승 + 운행 중 전환을 흉내 낸다 */
+    override suspend fun startRide(tripId: String): ActiveTrip {
         delay(300)
         return updateTrip { trip ->
-            val passengers = trip.passengers.map { if (it.id == passengerId) it.copy(boarded = true) else it }
-            val phase = if (passengers.all { it.boarded || it.noShow }) TripPhase.IN_TRIP else TripPhase.BOARDING
-            trip.copy(passengers = passengers, phase = phase, nextStopIndex = (trip.nextStopIndex + 1).coerceAtMost(trip.stops.lastIndex))
-        }
-    }
-
-    override suspend fun markNoShow(tripId: String, passengerId: String): ActiveTrip {
-        delay(300)
-        return updateTrip { trip ->
-            val passengers = trip.passengers.map { if (it.id == passengerId) it.copy(noShow = true) else it }
-            trip.copy(passengers = passengers)
-        }
-    }
-
-    override suspend fun completeDropoff(tripId: String, passengerId: String): ActiveTrip {
-        delay(300)
-        return updateTrip { trip ->
-            val passengers = trip.passengers.map { if (it.id == passengerId) it.copy(droppedOff = true) else it }
-            val allDone = passengers.all { it.droppedOff || it.noShow }
+            val firstDropoff = trip.stops.indexOfFirst { it.kind == StopKind.DROPOFF }
             trip.copy(
-                passengers = passengers,
-                phase = if (allDone) TripPhase.FARE_INPUT else TripPhase.IN_TRIP,
-                nextStopIndex = (trip.nextStopIndex + 1).coerceAtMost(trip.stops.lastIndex),
+                passengers = trip.passengers.map { it.copy(boarded = true) },
+                phase = TripPhase.IN_TRIP,
+                nextStopIndex = if (firstDropoff >= 0) firstDropoff else trip.nextStopIndex,
             )
         }
     }
