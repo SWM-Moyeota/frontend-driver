@@ -25,8 +25,7 @@ object Routes {
 
     // GRP/D 운행
     const val TRIP_PICKUP = "trip/pickup"                      // D13
-    const val TRIP_BOARDING = "trip/boarding"                  // D14
-    const val TRIP_DRIVING = "trip/driving"                    // D15
+    const val TRIP_DRIVING = "trip/driving"                    // D15 (D14 탑승 화면은 파티 단위 board 로 흡수·제거)
     const val TRIP_FARE = "trip/fare"                          // D16 (D16b 키패드 포함)
 
     // GRP/E 정산

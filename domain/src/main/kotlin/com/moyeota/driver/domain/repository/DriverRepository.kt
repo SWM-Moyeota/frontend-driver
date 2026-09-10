@@ -105,10 +105,15 @@ interface DriverRepository {
      * 알림 전용(상태 전이 없음)이라 실패해도 탑승 확인 플로우는 계속 진행한다.
      */
     suspend fun notifyPickupArrival(tripId: String)
-    /** D14 승객별 탑승 확인 — 기사가 육안 확인 후 탭 (서버 코드 검증 API 없음 → 코드 입력 단계 제거). */
-    suspend fun confirmBoarding(tripId: String, passengerId: String): ActiveTrip
-    suspend fun markNoShow(tripId: String, passengerId: String): ActiveTrip
-    suspend fun completeDropoff(tripId: String, passengerId: String): ActiveTrip
+
+    /**
+     * D13 「도착 · 운행 시작」 — 탑승 일괄 처리 후 운행 단계로 전환한다.
+     * 서버 board(POST rides/{partyId}/board)는 **파티 단위 1회 호출**이다(승객별 탑승/노쇼/하차 개념 없음)
+     * — 호출 성공 시 파티 전원이 탑승(IN_RIDE) 처리되므로, 반환 트립은 전원 boarded + 운행 중(IN_TRIP) 상태다.
+     * 상태 전이 액션 — 실패 시 예외 전파 (화면 유지 + 재시도).
+     */
+    suspend fun startRide(tripId: String): ActiveTrip
+
     suspend fun submitFinalFare(tripId: String, meterFare: Int): FareResult
 
     // 정산 (D17~D18)

@@ -14,8 +14,7 @@ fun NavGraphBuilder.tripGraph(
     repository: DriverRepository,
     locationSource: DriverLocationSource,
 ) {
-    composable(Routes.TRIP_PICKUP) { PickupRoute(navController, repository, locationSource) }   // D13
-    composable(Routes.TRIP_BOARDING) { BoardingRoute(navController, repository) }               // D14
+    composable(Routes.TRIP_PICKUP) { PickupRoute(navController, repository, locationSource) }   // D13 (도착 · 운행 시작)
     composable(Routes.TRIP_DRIVING) { DrivingRoute(navController, repository, locationSource) } // D15
     composable(Routes.TRIP_FARE) { FareRoute(navController, repository) }                       // D16 (+D16b 키패드)
 }

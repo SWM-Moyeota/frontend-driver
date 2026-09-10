@@ -4,6 +4,7 @@ import com.moyeota.driver.data.remote.AuthApi
 import com.moyeota.driver.data.remote.DispatchApi
 import com.moyeota.driver.data.remote.DispatchRules
 import com.moyeota.driver.data.remote.DriverApi
+import com.moyeota.driver.data.remote.PartyMembersApi
 import com.moyeota.driver.data.remote.auth.TokenStore
 import com.moyeota.driver.data.remote.calcFareResult
 import com.moyeota.driver.data.remote.pushCallSummary
@@ -19,6 +20,7 @@ import com.moyeota.driver.data.remote.dto.TokenRequestDto
 import com.moyeota.driver.data.remote.dto.UserLoginRequestDto
 import com.moyeota.driver.data.remote.serverMessage
 import com.moyeota.driver.data.remote.toActiveTrip
+import com.moyeota.driver.data.remote.withPassengerNicknames
 import com.moyeota.driver.data.remote.toCallDetail
 import com.moyeota.driver.data.remote.toCallSummary
 import com.moyeota.driver.data.remote.toRegisterRequest
@@ -36,6 +38,7 @@ import com.moyeota.driver.domain.model.Promotion
 import com.moyeota.driver.domain.model.QualificationCheckResult
 import com.moyeota.driver.domain.model.RatingSummary
 import com.moyeota.driver.domain.model.SettlementDetail
+import com.moyeota.driver.domain.model.StopKind
 import com.moyeota.driver.domain.model.TripHistoryDetail
 import com.moyeota.driver.domain.model.TripHistoryItem
 import com.moyeota.driver.domain.model.TripPhase
@@ -70,6 +73,8 @@ class RemoteDriverRepository(
     private val fallback: DummyDriverRepository,
     /** 단말 실측 위치 — 미주입(테스트·더미 구동)이면 기본 좌표로 폴백한다 */
     private val locationSource: DriverLocationSource = DriverLocationSource { null },
+    /** 승객 실닉네임 조회(매칭방 상세) — 미주입이면 닉네임 없이 "승객N" 표기로 동작한다 */
+    private val partyMembersApi: PartyMembersApi? = null,
 ) : DriverRepository {
 
     private var vehicleInfoLabel: String = DEFAULT_VEHICLE_LABEL
@@ -87,6 +92,13 @@ class RemoteDriverRepository(
      */
     @Volatile
     private var lastFcmToken: String? = null
+
+    /**
+     * 로그인/가입에서 확인한 표시 이름(닉네임) 캐시 — 홈 요약(더미)의 "박기사"를 실이름으로 덮는다.
+     * 실이름을 얻지 못하면 null 로 두어 홈은 더미 이름을 유지한다 (기본값 "기사"로 덮지 않는다).
+     */
+    @Volatile
+    private var cachedDriverName: String? = null
 
     /** 로그인/가입 성공 후 토큰 fire-and-forget 전송용 (호출 코루틴 수명과 분리) */
     private val fcmScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -130,9 +142,6 @@ class RemoteDriverRepository(
         }
         tokenStore.update(tokens.accessToken, tokens.refreshToken)
 
-        val name = runCatching { authApi.getMyInfo("Bearer ${tokens.accessToken}").name }
-            .getOrNull() ?: DEFAULT_DRIVER_NAME
-
         val driver = try {
             driverApi.getMe()
         } catch (e: retrofit2.HttpException) {
@@ -141,8 +150,12 @@ class RemoteDriverRepository(
             }
             throw IllegalStateException("기사 정보 조회 실패: ${e.serverMessage() ?: "서버 오류(${e.code()})"}", e)
         }
+        // 표시 이름: drivers/me 의 name(닉네임) 우선, 구서버·미설정이면 유저 정보 조회로 폴백
+        val name = driver.name?.takeIf { it.isNotBlank() }
+            ?: runCatching { authApi.getMyInfo("Bearer ${tokens.accessToken}").name }.getOrNull()
+        cachedDriverName = name
         flushFcmTokenAsync()
-        return LoginResult(status = driverAccountStatus(driver.status), driverName = name)
+        return LoginResult(status = driverAccountStatus(driver.status), driverName = name ?: DEFAULT_DRIVER_NAME)
     }
 
     /**
@@ -220,7 +233,9 @@ class RemoteDriverRepository(
         vehicleInfoLabel = "${form.vehicleType} ${form.plateNumber}"
 
         flushFcmTokenAsync()
-        return LoginResult(status = DriverAccountStatus.APPROVED, driverName = form.name.ifBlank { DEFAULT_DRIVER_NAME })
+        val displayName = form.nickname.ifBlank { form.name }
+        cachedDriverName = displayName.takeIf { it.isNotBlank() }
+        return LoginResult(status = DriverAccountStatus.APPROVED, driverName = displayName.ifBlank { DEFAULT_DRIVER_NAME })
     }
 
     /**
@@ -301,8 +316,17 @@ class RemoteDriverRepository(
 
     // ── 홈 · 영업 상태 ─────────────────────────────────────────────────────
 
-    /** 백엔드 미구현(오늘 수입·운행수 요약 API 없음) — 더미 위임. 영업 상태는 setDutyStatus 에서 동기화됨 */
-    override suspend fun getHomeSummary(): HomeSummary = fallback.getHomeSummary()
+    /**
+     * 수입·운행수 요약은 백엔드 미구현이라 더미 위임이지만, 기사 이름만은 실데이터로 덮는다
+     * (drivers/me 의 name = 유저 닉네임). 토큰 재발급 직후처럼 캐시가 없으면 한 번 조회해 채운다.
+     */
+    override suspend fun getHomeSummary(): HomeSummary {
+        val summary = fallback.getHomeSummary()
+        val name = cachedDriverName
+            ?: runCatching { driverApi.getMe().name?.takeIf { it.isNotBlank() } }.getOrNull()
+                ?.also { cachedDriverName = it }
+        return if (name != null) summary.copy(driverName = name) else summary
+    }
 
     /**
      * 실연동: POST /dispatch/online (위치 포함) · DELETE /dispatch/online — 토큰(@CurrentDriver) 기반.
@@ -488,8 +512,24 @@ class RemoteDriverRepository(
         }
         callFeed.remove(callId)   // 수락된 콜은 피드에서 소거 (콜 목록 재노출 방지)
         return party.toActiveTrip(vehicleInfoLabel, lastLatitude, lastLongitude)
+            .withPassengerNicknames(fetchPassengerNicknamesQuietly(partyId))
             .also { remoteTrip = it }
     }
+
+    /**
+     * 승객 실닉네임 베스트에포트 조회 — GET /matching/rooms/{partyId} 의 members[].nickname.
+     * 수락은 이미 성공한 뒤라 어떤 실패(404·네트워크·미배선)도 콜 수락 흐름을 막으면 안 된다 —
+     * 실패 시 빈 목록을 돌려줘 기존 "승객N" 표기를 유지한다.
+     * getActiveTrip/startRide 는 remoteTrip 캐시를 쓰므로 여기서 주입한 닉네임이 운행 내내 유지된다.
+     */
+    private suspend fun fetchPassengerNicknamesQuietly(partyId: Long): List<String?> =
+        try {
+            partyMembersApi?.getPartyMembers(partyId)?.members?.map { it.nickname }.orEmpty()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            emptyList()
+        }
 
     /**
      * 실연동: POST /dispatch/calls/{partyId}/reject (토큰 기반). 더미 콜 id 는 위임.
@@ -546,23 +586,21 @@ class RemoteDriverRepository(
     override suspend fun getActiveTrip(): ActiveTrip? = remoteTrip ?: fallback.getActiveTrip()
 
     /**
-     * 실연동: POST /dispatch/rides/{partyId}/board/{driverId}.
-     * 서버는 파티 단위 board 1회(전원 탑승 → IN_RIDE)만 지원하므로 첫 탑승 확인 시에만 서버를 호출하고,
-     * 승객별 탑승 체크는 로컬 상태 전이로 처리한다.
+     * 실연동: POST /dispatch/rides/{partyId}/board — 파티 단위 1회 호출로 전원 탑승(IN_RIDE) 처리.
+     * 성공 시 remote trip 을 전원 boarded + 운행 중(IN_TRIP, 서버 IN_RIDE 대응)으로 전환하고,
+     * nextStopIndex 를 첫 하차 스톱으로 옮긴다 (픽업 스톱은 모두 지나갔다).
+     * 상태 전이 액션 — 실운행 실패는 예외 전파 (화면 유지 + 재시도).
      */
-    override suspend fun confirmBoarding(tripId: String, passengerId: String): ActiveTrip {
+    override suspend fun startRide(tripId: String): ActiveTrip {
         val trip = remoteTrip
-        if (trip == null || trip.id != tripId) return fallback.confirmBoarding(tripId, passengerId)
+        if (trip == null || trip.id != tripId) return fallback.startRide(tripId)
         val partyId = requireNotNull(tripId.toLongOrNull()) { "remote trip id 는 partyId 여야 합니다: $tripId" }
-        if (trip.passengers.none { it.boarded }) {
-            dispatchApi.board(partyId)
-        }
-        val passengers = trip.passengers.map { if (it.id == passengerId) it.copy(boarded = true) else it }
-        val phase = if (passengers.all { it.boarded || it.noShow }) TripPhase.IN_TRIP else TripPhase.BOARDING
+        dispatchApi.board(partyId)
+        val firstDropoff = trip.stops.indexOfFirst { it.kind == StopKind.DROPOFF }
         return trip.copy(
-            passengers = passengers,
-            phase = phase,
-            nextStopIndex = (trip.nextStopIndex + 1).coerceAtMost(trip.stops.lastIndex),
+            passengers = trip.passengers.map { it.copy(boarded = true) },
+            phase = TripPhase.IN_TRIP,
+            nextStopIndex = if (firstDropoff >= 0) firstDropoff else trip.nextStopIndex,
         ).also { remoteTrip = it }
     }
 
@@ -579,27 +617,6 @@ class RemoteDriverRepository(
         } catch (_: Exception) {
             // 알림 트리거 실패는 무시 — 탑승 확인 플로우 우선
         }
-    }
-
-    /** 백엔드 미구현(노쇼 API 없음) — remote trip 은 로컬 전이, 그 외 더미 위임 */
-    override suspend fun markNoShow(tripId: String, passengerId: String): ActiveTrip {
-        val trip = remoteTrip
-        if (trip == null || trip.id != tripId) return fallback.markNoShow(tripId, passengerId)
-        val passengers = trip.passengers.map { if (it.id == passengerId) it.copy(noShow = true) else it }
-        return trip.copy(passengers = passengers).also { remoteTrip = it }
-    }
-
-    /** 백엔드 미구현(개별 하차 API 없음 — 종료는 complete 1회) — remote trip 은 로컬 전이, 그 외 더미 위임 */
-    override suspend fun completeDropoff(tripId: String, passengerId: String): ActiveTrip {
-        val trip = remoteTrip
-        if (trip == null || trip.id != tripId) return fallback.completeDropoff(tripId, passengerId)
-        val passengers = trip.passengers.map { if (it.id == passengerId) it.copy(droppedOff = true) else it }
-        val allDone = passengers.all { it.droppedOff || it.noShow }
-        return trip.copy(
-            passengers = passengers,
-            phase = if (allDone) TripPhase.FARE_INPUT else TripPhase.IN_TRIP,
-            nextStopIndex = (trip.nextStopIndex + 1).coerceAtMost(trip.stops.lastIndex),
-        ).also { remoteTrip = it }
     }
 
     /**
