@@ -33,6 +33,7 @@ data class RegisterDriverRequestDto(
 data class DriverResultDto(
     val id: Long? = null,
     val userId: Long? = null,
+    val name: String? = null,            // 표시 이름(유저 닉네임) — 구서버·닉네임 미설정이면 null
     val status: String? = null,          // PENDING | VERIFIED
     val callEnabled: Boolean = false,
 )
