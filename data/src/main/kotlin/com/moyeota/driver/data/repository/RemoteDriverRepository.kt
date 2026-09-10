@@ -4,6 +4,7 @@ import com.moyeota.driver.data.remote.AuthApi
 import com.moyeota.driver.data.remote.DispatchApi
 import com.moyeota.driver.data.remote.DispatchRules
 import com.moyeota.driver.data.remote.DriverApi
+import com.moyeota.driver.data.remote.PartyMembersApi
 import com.moyeota.driver.data.remote.auth.TokenStore
 import com.moyeota.driver.data.remote.calcFareResult
 import com.moyeota.driver.data.remote.pushCallSummary
@@ -19,6 +20,7 @@ import com.moyeota.driver.data.remote.dto.TokenRequestDto
 import com.moyeota.driver.data.remote.dto.UserLoginRequestDto
 import com.moyeota.driver.data.remote.serverMessage
 import com.moyeota.driver.data.remote.toActiveTrip
+import com.moyeota.driver.data.remote.withPassengerNicknames
 import com.moyeota.driver.data.remote.toCallDetail
 import com.moyeota.driver.data.remote.toCallSummary
 import com.moyeota.driver.data.remote.toRegisterRequest
@@ -71,6 +73,8 @@ class RemoteDriverRepository(
     private val fallback: DummyDriverRepository,
     /** 단말 실측 위치 — 미주입(테스트·더미 구동)이면 기본 좌표로 폴백한다 */
     private val locationSource: DriverLocationSource = DriverLocationSource { null },
+    /** 승객 실닉네임 조회(매칭방 상세) — 미주입이면 닉네임 없이 "승객N" 표기로 동작한다 */
+    private val partyMembersApi: PartyMembersApi? = null,
 ) : DriverRepository {
 
     private var vehicleInfoLabel: String = DEFAULT_VEHICLE_LABEL
@@ -489,8 +493,24 @@ class RemoteDriverRepository(
         }
         callFeed.remove(callId)   // 수락된 콜은 피드에서 소거 (콜 목록 재노출 방지)
         return party.toActiveTrip(vehicleInfoLabel, lastLatitude, lastLongitude)
+            .withPassengerNicknames(fetchPassengerNicknamesQuietly(partyId))
             .also { remoteTrip = it }
     }
+
+    /**
+     * 승객 실닉네임 베스트에포트 조회 — GET /matching/rooms/{partyId} 의 members[].nickname.
+     * 수락은 이미 성공한 뒤라 어떤 실패(404·네트워크·미배선)도 콜 수락 흐름을 막으면 안 된다 —
+     * 실패 시 빈 목록을 돌려줘 기존 "승객N" 표기를 유지한다.
+     * getActiveTrip/startRide 는 remoteTrip 캐시를 쓰므로 여기서 주입한 닉네임이 운행 내내 유지된다.
+     */
+    private suspend fun fetchPassengerNicknamesQuietly(partyId: Long): List<String?> =
+        try {
+            partyMembersApi?.getPartyMembers(partyId)?.members?.map { it.nickname }.orEmpty()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            emptyList()
+        }
 
     /**
      * 실연동: POST /dispatch/calls/{partyId}/reject (토큰 기반). 더미 콜 id 는 위임.

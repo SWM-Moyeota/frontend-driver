@@ -45,6 +45,8 @@ object NetworkModule {
 
     fun dispatchApi(): DispatchApi = authedRetrofit.create(DispatchApi::class.java)
 
+    fun partyMembersApi(): PartyMembersApi = authedRetrofit.create(PartyMembersApi::class.java)
+
     private val cachedAuthApi: AuthApi by lazy { baseRetrofit.create(AuthApi::class.java) }
 
     /** Authenticator 에서 쓰는 동기 재발급 — 성공 시 (access, refresh) 쌍, 실패 시 null */

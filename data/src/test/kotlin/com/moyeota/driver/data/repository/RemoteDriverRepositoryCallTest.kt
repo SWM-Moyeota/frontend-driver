@@ -4,11 +4,14 @@ import com.moyeota.driver.data.remote.AuthApi
 import com.moyeota.driver.data.remote.DispatchApi
 import com.moyeota.driver.data.remote.DispatchRules
 import com.moyeota.driver.data.remote.DriverApi
+import com.moyeota.driver.data.remote.PartyMembersApi
 import com.moyeota.driver.data.remote.auth.TokenStore
 import com.moyeota.driver.data.remote.dto.CallStatusResponseDto
 import com.moyeota.driver.data.remote.dto.CompleteRideRequestDto
 import com.moyeota.driver.data.remote.dto.DriverResultDto
 import com.moyeota.driver.data.remote.dto.LocationReportRequestDto
+import com.moyeota.driver.data.remote.dto.PartyDetailMembersDto
+import com.moyeota.driver.data.remote.dto.PartyMemberDto
 import com.moyeota.driver.data.remote.dto.PartySummaryDto
 import com.moyeota.driver.data.remote.dto.PhoneCheckRequestDto
 import com.moyeota.driver.data.remote.dto.PhoneCheckResponseDto
@@ -56,12 +59,16 @@ class RemoteDriverRepositoryCallTest {
         estimatedFare = 12_000,
     )
 
-    private fun repository(dispatchApi: DispatchApi) = RemoteDriverRepository(
+    private fun repository(
+        dispatchApi: DispatchApi,
+        partyMembersApi: PartyMembersApi? = null,
+    ) = RemoteDriverRepository(
         authApi = UnusedAuthApi,
         driverApi = UnusedDriverApi,
         dispatchApi = dispatchApi,
         tokenStore = TokenStore(),
         fallback = DummyDriverRepository(),
+        partyMembersApi = partyMembersApi,
     )
 
     // ── 상세 조회 실패: 더미 강등 금지 ──────────────────────────────────
@@ -201,6 +208,58 @@ class RemoteDriverRepositoryCallTest {
         assertTrue(repository.getCalls().isEmpty())
     }
 
+    // ── 콜 수락 시 승객 닉네임 주입 (베스트에포트) ─────────────────────
+
+    @Test
+    fun `acceptCall - 매칭방 닉네임을 passengers 와 stops 에 순서대로 주입한다`() = runBlocking {
+        val repository = repository(
+            FakeDispatchApi(onAccept = {}) { partyDto },
+            partyMembersApi = FakePartyMembersApi { partyId ->
+                assertEquals(42L, partyId)
+                PartyDetailMembersDto(
+                    members = listOf(
+                        PartyMemberDto(nickname = "승객검D417"),
+                        PartyMemberDto(nickname = "모여타짱"),
+                        PartyMemberDto(nickname = null),   // 탈퇴 회원 — 승객3 유지
+                    ),
+                )
+            },
+        )
+
+        val trip = repository.acceptCall("42")
+
+        assertEquals(listOf("승객검D417", "모여타짱", "승객3"), trip.passengers.map { it.maskedName })
+        // D15 하차 매칭(passengerMaskedName 문자열 대응)을 위해 스톱 이름도 함께 바뀐다
+        assertEquals(
+            listOf("승객검D417", "모여타짱", "승객3"),
+            trip.stops.filter { it.kind == StopKind.DROPOFF }.map { it.passengerMaskedName },
+        )
+        // getActiveTrip 은 remoteTrip 캐시 기반 — 닉네임이 유지된다
+        assertEquals(trip, repository.getActiveTrip())
+    }
+
+    @Test
+    fun `acceptCall - 닉네임 조회 실패는 조용히 폴백, 수락 흐름을 막지 않는다`() = runBlocking {
+        val repository = repository(
+            FakeDispatchApi(onAccept = {}) { partyDto },
+            partyMembersApi = FakePartyMembersApi { throw httpException(404, "PARTY_NOT_FOUND") },
+        )
+
+        val trip = repository.acceptCall("42")
+
+        assertEquals(TripPhase.ASSIGNED, trip.phase)
+        assertEquals(listOf("승객1", "승객2", "승객3"), trip.passengers.map { it.maskedName })
+    }
+
+    @Test
+    fun `acceptCall - 닉네임 API 미배선이면 기존 승객N 표기 그대로`() = runBlocking {
+        val repository = repository(FakeDispatchApi(onAccept = {}) { partyDto })
+
+        val trip = repository.acceptCall("42")
+
+        assertEquals(listOf("승객1", "승객2", "승객3"), trip.passengers.map { it.maskedName })
+    }
+
     // ── 운행 시작 (파티 단위 board) ───────────────────────────────────
 
     @Test
@@ -273,6 +332,13 @@ private class FakeDispatchApi(
     override suspend fun arrive(partyId: Long) = unused()
     override suspend fun board(partyId: Long) = onBoard()
     override suspend fun complete(partyId: Long, body: CompleteRideRequestDto) = unused()
+}
+
+/** 매칭방 상세를 시나리오별로 바꿔 끼우는 가짜 파티 멤버 API */
+private class FakePartyMembersApi(
+    private val respond: (Long) -> PartyDetailMembersDto,
+) : PartyMembersApi {
+    override suspend fun getPartyMembers(partyId: Long): PartyDetailMembersDto = respond(partyId)
 }
 
 private object UnusedAuthApi : AuthApi {

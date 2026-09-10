@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
@@ -170,8 +169,8 @@ private fun CallAssignedScreen(
             style = MoyeotaType.HeadingLg,
             color = MoyeotaColor.TextMute,
         )
-        trip.passengers.forEachIndexed { index, passenger ->
-            PassengerRow(index = index, passenger = passenger)
+        trip.passengers.forEach { passenger ->
+            PassengerRow(passenger = passenger)
         }
 
         Spacer(Modifier.weight(1f))
@@ -193,41 +192,22 @@ private fun CallAssignedScreen(
     }
 }
 
+// 승객 행 — 표시 이름(닉네임)만. 경로는 파티 단위(위 픽업 카드)라 승객별로 반복하지 않는다
 @Composable
-private fun PassengerRow(index: Int, passenger: TripPassenger) {
+private fun PassengerRow(passenger: TripPassenger) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(min = 72.dp)
+            .heightIn(min = 60.dp)
             .padding(horizontal = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         AvatarCircle(size = 40.dp)
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    text = passenger.maskedName,
-                    style = MoyeotaType.HeadingLg,
-                    color = MoyeotaColor.InkPrimary,
-                )
-                Box(
-                    modifier = Modifier
-                        .background(MoyeotaColor.SurfaceSoft, CircleShape)
-                        .padding(horizontal = 12.dp, vertical = 3.dp),
-                ) {
-                    Text(
-                        text = "승객 ${index + 1}",
-                        style = MoyeotaType.CaptionMd,
-                        color = MoyeotaColor.TextBody,
-                    )
-                }
-            }
-            Text(
-                text = "${passenger.pickupPlace} → ${passenger.dropoffPlace}",
-                style = MoyeotaType.BodyLg,
-                color = MoyeotaColor.TextBody,
-            )
-        }
+        Text(
+            text = passenger.maskedName,
+            style = MoyeotaType.HeadingLg,
+            color = MoyeotaColor.InkPrimary,
+        )
     }
 }
