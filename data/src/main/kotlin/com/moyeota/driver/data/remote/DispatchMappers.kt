@@ -161,6 +161,39 @@ private fun PartySummaryDto.toPassengerStops(passengers: List<TripPassenger>): L
     return pickups + dropoffs
 }
 
+/**
+ * 승객 실닉네임 주입 — 매칭방 상세(GET /matching/rooms/{partyId})의 members[].nickname 을
+ * **순서 매칭**(passengers[i] ↔ nicknames[i])으로 [TripPassenger.maskedName] 에 덮어쓴다.
+ *
+ * 운행 화면(D15)이 [RouteStop.passengerMaskedName] **문자열 매칭**으로 하차 승객을 찾으므로,
+ * passengers 만 바꾸고 stops 를 안 바꾸면 매칭이 깨져 하차 버튼이 영영 비활성이 된다 —
+ * 반드시 양쪽을 같은 이름으로 함께 교체한다.
+ *
+ * 방어 규칙 (콜 수락 흐름을 절대 막지 않는 베스트에포트):
+ * - null·공백 닉네임, 인원수보다 짧은 목록: 해당 승객은 기존 "승객N" 유지
+ * - 앞 승객과 중복되는 닉네임: 뒤 승객은 "승객N" 유지 — 이름이 겹치면 스톱 문자열 매칭이
+ *   엉뚱한 승객을 하차 처리할 수 있다
+ * - 빈 목록: 원본 그대로 반환
+ */
+fun ActiveTrip.withPassengerNicknames(nicknames: List<String?>): ActiveTrip {
+    val renames = mutableMapOf<String, String>()   // 기존 표시명 → 닉네임
+    val usedNames = passengers.map { it.maskedName }.toMutableSet()
+    val renamedPassengers = passengers.mapIndexed { index, passenger ->
+        val nickname = nicknames.getOrNull(index)?.trim()?.takeIf { it.isNotEmpty() }
+        if (nickname == null || nickname == passenger.maskedName || !usedNames.add(nickname)) {
+            passenger
+        } else {
+            renames[passenger.maskedName] = nickname
+            passenger.copy(maskedName = nickname)
+        }
+    }
+    if (renames.isEmpty()) return this
+    val renamedStops = stops.map { stop ->
+        renames[stop.passengerMaskedName]?.let { stop.copy(passengerMaskedName = it) } ?: stop
+    }
+    return copy(passengers = renamedPassengers, stops = renamedStops)
+}
+
 /** 콜 상세(D10) 표기용 스톱 — 출발/도착 각 1행, 합승은 인원을 묶어 보여준다 */
 private fun PartySummaryDto.toStops(): List<RouteStop> {
     val name = if (memberCount >= 2) "승객 ${memberCount}인" else "승객1"

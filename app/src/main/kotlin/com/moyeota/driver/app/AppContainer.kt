@@ -22,6 +22,7 @@ class AppContainer(context: Context) {
                 authApi = NetworkModule.authApi(),
                 driverApi = NetworkModule.driverApi(),
                 dispatchApi = NetworkModule.dispatchApi(),
+                partyMembersApi = NetworkModule.partyMembersApi(),
                 tokenStore = NetworkModule.tokenStore,
                 fallback = DummyDriverRepository(),
                 locationSource = locationSource,

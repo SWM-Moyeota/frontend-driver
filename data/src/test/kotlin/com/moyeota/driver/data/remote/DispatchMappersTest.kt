@@ -168,6 +168,62 @@ class DispatchMappersTest {
         assertNull(trip.destinationPoint)
     }
 
+    // ── 승객 닉네임 주입 ───────────────────────────────────────────────
+
+    @Test
+    fun `닉네임 주입 - passengers 와 stops 를 순서 매칭으로 함께 교체한다`() {
+        val trip = poolParty.toActiveTrip(vehicleInfoLabel = "쏘나타 34가 1234")
+            .withPassengerNicknames(listOf("승객검D417", "모여타짱"))
+
+        assertEquals(listOf("승객검D417", "모여타짱"), trip.passengers.map { it.maskedName })
+        // 운행(D15) 하차 매칭은 passengerMaskedName 문자열 대응 — 스톱 이름도 같이 바뀌어야 한다
+        assertEquals(
+            listOf("승객검D417", "모여타짱", "승객검D417", "모여타짱"),   // 픽업 2 + 하차 2
+            trip.stops.map { it.passengerMaskedName },
+        )
+        // 이름 외 진행 상태·순서는 그대로
+        assertEquals(TripPhase.ASSIGNED, trip.phase)
+        assertEquals(0, trip.nextStopIndex)
+        assertFalse(trip.passengers.any { it.boarded || it.droppedOff || it.noShow })
+    }
+
+    @Test
+    fun `닉네임 주입 - null·공백·부족한 목록은 해당 승객만 승객N 유지`() {
+        val trip = poolParty.copy(memberCount = 3).toActiveTrip(vehicleInfoLabel = "쏘나타")
+            .withPassengerNicknames(listOf(null, "  "))   // 3인인데 2개, 그마저 무효
+
+        assertEquals(listOf("승객1", "승객2", "승객3"), trip.passengers.map { it.maskedName })
+
+        val partial = poolParty.copy(memberCount = 3).toActiveTrip(vehicleInfoLabel = "쏘나타")
+            .withPassengerNicknames(listOf("승객검D417"))
+
+        assertEquals(listOf("승객검D417", "승객2", "승객3"), partial.passengers.map { it.maskedName })
+        assertEquals(
+            listOf("승객검D417", "승객2", "승객3", "승객검D417", "승객2", "승객3"),
+            partial.stops.map { it.passengerMaskedName },
+        )
+    }
+
+    @Test
+    fun `닉네임 주입 - 빈 목록이면 원본 그대로`() {
+        val original = poolParty.toActiveTrip(vehicleInfoLabel = "쏘나타")
+
+        assertEquals(original, original.withPassengerNicknames(emptyList()))
+    }
+
+    @Test
+    fun `닉네임 주입 - 중복 닉네임은 뒤 승객이 승객N 을 유지한다 (스톱 매칭 보호)`() {
+        val trip = poolParty.toActiveTrip(vehicleInfoLabel = "쏘나타")
+            .withPassengerNicknames(listOf("모여타짱", "모여타짱"))
+
+        assertEquals(listOf("모여타짱", "승객2"), trip.passengers.map { it.maskedName })
+        // 스톱 이름이 전부 서로 다른 승객을 가리켜야 하차 매칭이 안전하다
+        assertEquals(
+            listOf("모여타짱", "승객2", "모여타짱", "승객2"),
+            trip.stops.map { it.passengerMaskedName },
+        )
+    }
+
     // ── 요금 계산 ──────────────────────────────────────────────────────
 
     @Test
