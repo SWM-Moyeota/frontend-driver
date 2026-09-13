@@ -163,6 +163,22 @@ data class ActiveTrip(
     val destinationPoint: GeoPoint? = null,
 )
 
+/**
+ * 앱 재실행 직후 1회 수행하는 세션·운행 복구 결과 ([DriverRepository.restoreSession]).
+ *
+ * 시작 화면 판정용 — 네비게이션 startDestination 을 이 값으로 결정한다:
+ * `loggedIn == false` → 로그인, `ongoingTrip == null` → 홈, 그 밖엔 운행 단계(phase)별 운행 화면.
+ */
+data class RestoredSession(
+    /** 저장된 토큰으로 서버 세션이 유효한가 (false 면 재로그인 필요) */
+    val loggedIn: Boolean,
+    /**
+     * 진행 중이던 운행 (없으면 null).
+     * 복구 성공 시 리포지토리 캐시에도 심어 이후 [DriverRepository.getActiveTrip] 이 같은 값을 준다.
+     */
+    val ongoingTrip: ActiveTrip?,
+)
+
 /** D16 요금 확정 결과. 기사 정산액 = 승객 청구 총액 − 서비스 수수료(5%) ± 보너스·차감 */
 data class FareResult(
     val meterFare: Int,

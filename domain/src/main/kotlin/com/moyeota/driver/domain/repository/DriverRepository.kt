@@ -11,6 +11,7 @@ import com.moyeota.driver.domain.model.MissedCall
 import com.moyeota.driver.domain.model.Promotion
 import com.moyeota.driver.domain.model.QualificationCheckResult
 import com.moyeota.driver.domain.model.RatingSummary
+import com.moyeota.driver.domain.model.RestoredSession
 import com.moyeota.driver.domain.model.SettlementDetail
 import com.moyeota.driver.domain.model.TripHistoryDetail
 import com.moyeota.driver.domain.model.TripHistoryItem
@@ -21,6 +22,15 @@ import com.moyeota.driver.domain.model.TripHistoryItem
  * 실연동 시 RemoteDriverRepository 가 이 인터페이스를 그대로 구현한다.
  */
 interface DriverRepository {
+
+    /**
+     * 앱 재실행 직후 **1회** 호출 — 단말에 저장된 세션(토큰)과 진행 중이던 운행을 복구한다.
+     *
+     * 시작 화면 게이트 전용이라 예외를 던지지 않는다. 네트워크 실패는 "복구 못 함"([RestoredSession.ongoingTrip] null)
+     * 으로 떨어질 뿐 저장된 세션을 지우지 않으므로 다음 실행에서 다시 복구를 시도한다 —
+     * 저장을 비우는 경우는 세션 만료(401)·기사 미등록·운행이 이미 끝났음이 **확인**된 때뿐이다.
+     */
+    suspend fun restoreSession(): RestoredSession
 
     // 인증 · 가입 (D01~D05b)
     suspend fun login(loginId: String, password: String): LoginResult
