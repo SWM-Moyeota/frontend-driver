@@ -109,17 +109,12 @@ fun PartySummaryDto.toActiveTrip(
     driverLng: Double? = null,
 ): ActiveTrip {
     val summary = toCallSummary(driverLat, driverLng)
-    val passengers = List(summary.passengerCount) { i ->
-        TripPassenger(
-            id = "p-$i",
-            maskedName = "승객${i + 1}",
-            pickupPlace = summary.pickupPlace,
-            dropoffPlace = summary.dropoffPlace,
-            boarded = false,
-            droppedOff = false,
-            noShow = false,
-        )
-    }
+    val passengers = buildPassengers(
+        count = summary.passengerCount,
+        pickupPlace = summary.pickupPlace,
+        dropoffPlace = summary.dropoffPlace,
+        boarded = false,
+    )
     return ActiveTrip(
         id = summary.id,
         type = summary.type,
@@ -127,7 +122,7 @@ fun PartySummaryDto.toActiveTrip(
         passengers = passengers,
         // 운행 화면은 스톱의 passengerMaskedName 으로 승객을 찾아 하차 처리한다 —
         // 집계 표기("승객 2인")를 쓰면 매칭이 실패해 하차 버튼이 영영 비활성이 되므로 승객별 스톱을 만든다.
-        stops = toPassengerStops(passengers),
+        stops = passengerStops(summary.pickupPlace, summary.dropoffPlace, passengers),
         nextStopIndex = 0,
         remainingKm = summary.distanceToPickupKm,
         remainingMin = etaMinFromDistance(summary.distanceToPickupKm),
@@ -139,14 +134,39 @@ fun PartySummaryDto.toActiveTrip(
 }
 
 /**
+ * 운행 승객 목록 — 서버 파티는 승객별 출발·도착이 없으므로(합승 전원이 같은 구간) 전원이 같은 장소를 갖는다.
+ * 표시명은 "승객1", "승객2" … 기본값이며 [withPassengerNicknames] 가 실닉네임으로 덮는다.
+ *
+ * @param boarded 복구 시 이미 운행 중(IN_RIDE)이면 전원 탑승 상태로 만든다
+ */
+internal fun buildPassengers(
+    count: Int,
+    pickupPlace: String,
+    dropoffPlace: String,
+    boarded: Boolean,
+): List<TripPassenger> = List(count) { i ->
+    TripPassenger(
+        id = "p-$i",
+        maskedName = "승객${i + 1}",
+        pickupPlace = pickupPlace,
+        dropoffPlace = dropoffPlace,
+        boarded = boarded,
+        droppedOff = false,
+        noShow = false,
+    )
+}
+
+/**
  * 운행용 스톱 — 승객 1명당 픽업 1 + 하차 1.
  * 서버 파티는 출발지·도착지가 각 1곳(합승 전원이 같은 구간)이지만, 운행 화면(D15)이
  * 하차 스톱 ↔ 승객을 [RouteStop.passengerMaskedName] 으로 연결하므로 승객 수만큼 펼친다.
  * 픽업 스톱이 모두 앞, 하차 스톱이 모두 뒤 — nextStopIndex 진행 순서와 일치한다.
  */
-private fun PartySummaryDto.toPassengerStops(passengers: List<TripPassenger>): List<RouteStop> {
-    val pickup = departure ?: "출발지 미상"
-    val dropoff = destination ?: "도착지 미상"
+internal fun passengerStops(
+    pickup: String,
+    dropoff: String,
+    passengers: List<TripPassenger>,
+): List<RouteStop> {
     val pickups = passengers.mapIndexed { index, passenger ->
         RouteStop(order = index, kind = StopKind.PICKUP, place = pickup, passengerMaskedName = passenger.maskedName)
     }

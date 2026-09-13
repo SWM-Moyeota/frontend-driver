@@ -18,12 +18,15 @@ import com.moyeota.driver.data.remote.dto.RegisterFcmTokenRequestDto
 import com.moyeota.driver.data.remote.dto.RegisterVehicleRequestDto
 import com.moyeota.driver.data.remote.dto.TokenRequestDto
 import com.moyeota.driver.data.remote.dto.UserLoginRequestDto
+import com.moyeota.driver.data.remote.restorablePhase
 import com.moyeota.driver.data.remote.serverMessage
 import com.moyeota.driver.data.remote.toActiveTrip
+import com.moyeota.driver.data.remote.toRestoredTrip
 import com.moyeota.driver.data.remote.withPassengerNicknames
 import com.moyeota.driver.data.remote.toCallDetail
 import com.moyeota.driver.data.remote.toCallSummary
 import com.moyeota.driver.data.remote.toRegisterRequest
+import com.moyeota.driver.data.session.DriverSessionStorage
 import com.moyeota.driver.domain.model.ActiveTrip
 import com.moyeota.driver.domain.model.CallDetail
 import com.moyeota.driver.domain.model.CallException
@@ -37,6 +40,7 @@ import com.moyeota.driver.domain.model.MissedCall
 import com.moyeota.driver.domain.model.Promotion
 import com.moyeota.driver.domain.model.QualificationCheckResult
 import com.moyeota.driver.domain.model.RatingSummary
+import com.moyeota.driver.domain.model.RestoredSession
 import com.moyeota.driver.domain.model.SettlementDetail
 import com.moyeota.driver.domain.model.StopKind
 import com.moyeota.driver.domain.model.TripHistoryDetail
@@ -75,6 +79,11 @@ class RemoteDriverRepository(
     private val locationSource: DriverLocationSource = DriverLocationSource { null },
     /** 승객 실닉네임 조회(매칭방 상세) — 미주입이면 닉네임 없이 "승객N" 표기로 동작한다 */
     private val partyMembersApi: PartyMembersApi? = null,
+    /**
+     * 세션 영속 저장소(토큰 쌍 + 활성 partyId) — 미주입(테스트·더미 구동)이면 인메모리로만 동작해
+     * 앱 재실행 복구가 비활성화된다.
+     */
+    private val sessionStorage: DriverSessionStorage? = null,
 ) : DriverRepository {
 
     private var vehicleInfoLabel: String = DEFAULT_VEHICLE_LABEL
@@ -124,6 +133,156 @@ class RemoteDriverRepository(
         return LocationReportRequestDto(lastLatitude, lastLongitude)
     }
 
+    // ── 세션 · 운행 복구 (앱 재실행 직후 1회) ──────────────────────────────
+
+    /**
+     * 저장된 토큰으로 세션을 확인하고, 저장해 둔 활성 partyId 로 진행 중이던 운행을 되살린다.
+     *
+     * 서버에 "이 기사의 진행 중 운행" 조회 API 가 없어서(hasOngoingRide 는 accept 가드로만 쓰인다)
+     * 콜 수락 시 저장해 둔 partyId 로 매칭방 상세(GET /matching/rooms/{partyId})를 다시 읽는 방식이다.
+     * dispatch 콜 상세는 수락 즉시 콜 후보에서 빠져 409 CALL_CLOSED 로 떨어지므로 쓸 수 없다.
+     *
+     * 활성 partyId 를 **지우는 경우는 확인된 종료뿐**이다 — 기사 미등록(404)·파티 없음(404)·
+     * 다른 기사에게 배정됨·이미 끝난 파티. 네트워크 실패는 지우지 않고 홈에 착지시켜 다음 실행에서 다시 시도한다.
+     * 세션 만료(401/403)도 **토큰만** 비우고 partyId 는 남긴다 — 재로그인 직후 [login] 이 그 파티로 운행을 되살린다.
+     *
+     * 이 함수는 시작 게이트 전용이라 어떤 실패에도 예외를 올리지 않는다 (CancellationException 제외).
+     */
+    override suspend fun restoreSession(): RestoredSession {
+        if (!tokenStore.isLoggedIn()) return RestoredSession(loggedIn = false, ongoingTrip = null)
+
+        // 1) 세션 유효성 — 401 이면 Authenticator 가 재발급까지 시도한 뒤의 실패다(= 재로그인 필요)
+        val driver = try {
+            retryOnTransient { driverApi.getMe() }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: retrofit2.HttpException) {
+            when (e.code()) {
+                // 세션 만료 — 토큰만 비운다 (운행은 재로그인 후 되살릴 수 있어야 한다)
+                401, 403 -> clearExpiredTokens()
+                // 기사 미등록 — 이 계정으로는 기사 API 자체를 쓸 수 없다(확인된 종료)
+                404 -> clearStoredSession()
+                // 5xx 등 — 저장 보존
+                else -> return RestoredSession(loggedIn = true, ongoingTrip = null)
+            }
+            return RestoredSession(loggedIn = false, ongoingTrip = null)
+        } catch (_: Exception) {
+            return RestoredSession(loggedIn = true, ongoingTrip = null)   // 네트워크 실패 — 저장 보존
+        }
+        // 홈 인사말이 첫 프레임부터 실이름으로 뜨게 한다 (getHomeSummary 의 추가 조회도 아낀다)
+        driver.name?.takeIf { it.isNotBlank() }?.let { cachedDriverName = it }
+
+        // 2) 저장해 둔 파티로 운행 복원
+        return when (val outcome = restoreOngoingTrip(driver.id)) {
+            is TripRestore.Restored -> RestoredSession(loggedIn = true, ongoingTrip = outcome.trip)
+            TripRestore.SessionExpired -> {
+                clearExpiredTokens()
+                RestoredSession(loggedIn = false, ongoingTrip = null)
+            }
+
+            TripRestore.None -> RestoredSession(loggedIn = true, ongoingTrip = null)
+        }
+    }
+
+    /**
+     * 저장된 활성 partyId 로 진행 중이던 운행을 되살려 [remoteTrip] 에 심는다.
+     * [restoreSession](앱 재실행)과 [login](재로그인) 이 **같은 판정**을 쓰도록 뽑아낸 공통 경로다.
+     *
+     * 실패는 결과값으로만 알린다(예외 없음 — CancellationException 제외).
+     * 저장된 partyId 가 없으면 네트워크를 타지 않는다.
+     */
+    private suspend fun restoreOngoingTrip(myDriverId: Long?): TripRestore {
+        val partyId = sessionStorage?.readActivePartyId() ?: return TripRestore.None
+        val api = partyMembersApi ?: return TripRestore.None
+
+        val party = try {
+            retryOnTransient { api.getPartyDetail(partyId) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: retrofit2.HttpException) {
+            if (e.code() == 401 || e.code() == 403) return TripRestore.SessionExpired
+            // 404 PARTY_NOT_FOUND — 저장된 id 가 서버에 없다(확인된 종료). 그 밖의 4xx/5xx 는 저장 보존
+            if (e.code() == 404) sessionStorage.clearActivePartyId()
+            return TripRestore.None
+        } catch (_: Exception) {
+            return TripRestore.None   // 네트워크 실패 — 저장 보존
+        }
+
+        // 내 운행인가 — 내 기사 id 를 모르면(구서버 응답) 판정 불가라 지우지 않고 보류한다
+        if (myDriverId == null) return TripRestore.None
+        if (party.taxiDriverId != myDriverId) {
+            sessionStorage.clearActivePartyId()
+            return TripRestore.None
+        }
+
+        // 복구 가능한 단계인가 (IN_RIDE · DRIVER_ASSIGNED 만)
+        val phase = restorablePhase(party.status)
+        if (phase == null) {
+            sessionStorage.clearActivePartyId()   // FINISHED · CANCELED · MATCHING — 운행이 끝났다
+            return TripRestore.None
+        }
+
+        refreshLocation()   // 남은 거리·ETA 를 실위치 기준으로 계산
+        val trip = party.toRestoredTrip(
+            partyId = partyId,
+            phase = phase,
+            vehicleInfoLabel = vehicleInfoLabel,
+            driverLat = lastLatitude,
+            driverLng = lastLongitude,
+        )
+        // 캐시에 심어 이후 getActiveTrip·startRide·submitFinalFare 가 이어서 동작하게 한다
+        remoteTrip = trip
+        return TripRestore.Restored(trip)
+    }
+
+    /** [restoreOngoingTrip] 결과 — 복원됨 / 복원할 운행 없음 / 세션 만료(호출부가 정리) */
+    private sealed interface TripRestore {
+        data class Restored(val trip: ActiveTrip) : TripRestore
+        data object None : TripRestore
+        data object SessionExpired : TripRestore
+    }
+
+    /**
+     * 세션 만료(401/403) 정리 — 토큰만 비우고 **활성 partyId 는 남긴다**.
+     *
+     * 운행 중 토큰이 만료된 기사가 재로그인했을 때 운행으로 돌아갈 수 있어야 하기 때문이다.
+     * 낡은 partyId 가 남아도 복구 경로의 소유자(taxiDriverId)·상태(FINISHED 등) 가드가 걸러낸다.
+     */
+    private fun clearExpiredTokens() {
+        tokenStore.clear()
+        remoteTrip = null
+    }
+
+    /** 확인된 종료(로그아웃·기사 미등록) 정리 — 토큰(write-through)과 활성 파티를 함께 비운다 */
+    private fun clearStoredSession() {
+        tokenStore.clear()
+        sessionStorage?.clearActivePartyId()
+        remoteTrip = null
+    }
+
+    /**
+     * 복구 경로 전용 재시도 — 배포 서버 콜드 스타트(첫 요청 7~8초, 간헐 타임아웃)로 운행 복구를
+     * 놓치지 않기 위해 **일시적 실패에만** 2회까지 더 시도한다.
+     * 4xx 는 다시 물어도 답이 같으므로 즉시 올린다 (판정은 호출부가 한다).
+     */
+    private suspend inline fun <T> retryOnTransient(block: () -> T): T {
+        var lastError: Exception? = null
+        repeat(RESTORE_MAX_ATTEMPTS) { attempt ->
+            try {
+                return block()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: retrofit2.HttpException) {
+                if (e.code() < 500) throw e
+                lastError = e
+            } catch (e: Exception) {
+                lastError = e
+            }
+            if (attempt < RESTORE_MAX_ATTEMPTS - 1) kotlinx.coroutines.delay(RESTORE_RETRY_DELAY_MS)
+        }
+        throw lastError ?: IllegalStateException("복구 요청 실패")
+    }
+
     // ── 인가 · 가입 (실연동 — POST /api/v1/auth/*) ────────────────────────
 
     /**
@@ -155,7 +314,28 @@ class RemoteDriverRepository(
             ?: runCatching { authApi.getMyInfo("Bearer ${tokens.accessToken}").name }.getOrNull()
         cachedDriverName = name
         flushFcmTokenAsync()
+        rehydrateOngoingTripQuietly(driver.id)
         return LoginResult(status = driverAccountStatus(driver.status), driverName = name ?: DEFAULT_DRIVER_NAME)
+    }
+
+    /**
+     * 로그인 성공 직후 진행 중이던 운행 재수화 — **베스트에포트**.
+     *
+     * 세션 만료로 시작 게이트가 로그인 화면으로 보냈거나(토큰만 비우고 partyId 는 남는다),
+     * 복구가 네트워크 실패로 홈에 착지한 뒤에도 재로그인만으로 운행에 돌아올 수 있게 한다.
+     * 이 호출이 끝나면 [getActiveTrip] 이 복원된 운행을 돌려준다 — 화면은 그 값으로 운행 화면 복귀를 판단한다.
+     *
+     * 저장된 partyId 가 없으면 네트워크 호출이 없고, 어떤 실패도 로그인을 실패시키지 않는다.
+     * (신규 가입[signUp]은 진행 중 운행이 있을 수 없어 대상이 아니다)
+     */
+    private suspend fun rehydrateOngoingTripQuietly(myDriverId: Long?) {
+        try {
+            restoreOngoingTrip(myDriverId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // 무시 — 로그인은 성공이다. 저장은 남아 다음 기회(앱 재실행)에 다시 복구된다
+        }
     }
 
     /**
@@ -245,8 +425,7 @@ class RemoteDriverRepository(
     override suspend fun logout() {
         stopHeartbeat()
         val refreshToken = tokenStore.refreshToken()
-        tokenStore.clear()
-        remoteTrip = null
+        clearStoredSession()   // 토큰(저장 포함) + 활성 파티 + 운행 캐시
         if (refreshToken != null) {
             try {
                 authApi.logout(TokenRequestDto(refreshToken))
@@ -511,6 +690,8 @@ class RemoteDriverRepository(
             throw callFailure(e, "수락하지 못했어요")
         }
         callFeed.remove(callId)   // 수락된 콜은 피드에서 소거 (콜 목록 재노출 방지)
+        // 앱이 죽어도 이 파티로 운행을 되찾을 수 있게 단말에 남긴다 ([restoreSession])
+        sessionStorage?.writeActivePartyId(partyId)
         return party.toActiveTrip(vehicleInfoLabel, lastLatitude, lastLongitude)
             .withPassengerNicknames(fetchPassengerNicknamesQuietly(partyId))
             .also { remoteTrip = it }
@@ -524,7 +705,7 @@ class RemoteDriverRepository(
      */
     private suspend fun fetchPassengerNicknamesQuietly(partyId: Long): List<String?> =
         try {
-            partyMembersApi?.getPartyMembers(partyId)?.members?.map { it.nickname }.orEmpty()
+            partyMembersApi?.getPartyDetail(partyId)?.members?.map { it.nickname }.orEmpty()
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
@@ -630,6 +811,7 @@ class RemoteDriverRepository(
         val partyId = requireNotNull(tripId.toLongOrNull()) { "remote trip id 는 partyId 여야 합니다: $tripId" }
         dispatchApi.complete(partyId, CompleteRideRequestDto(fare = meterFare))
         remoteTrip = null
+        sessionStorage?.clearActivePartyId()   // 운행 종료 — 다음 실행에서 복구 대상이 아니다
         return calcFareResult(meterFare, DispatchRules.CALL_FEE, trip.poolBonus)
     }
 
@@ -648,6 +830,12 @@ class RemoteDriverRepository(
     companion object {
         /** 영업중 위치 하트비트 주기 — 서버 후보 TTL(30초)의 절반 */
         const val HEARTBEAT_INTERVAL_MS = 15_000L
+
+        /** 복구 요청 시도 횟수 (최초 1 + 재시도 2) — 콜드 스타트 실패로 운행을 놓치지 않기 위함 */
+        const val RESTORE_MAX_ATTEMPTS = 3
+
+        /** 복구 재시도 간격 — 시작 게이트를 오래 붙잡지 않도록 짧게 */
+        const val RESTORE_RETRY_DELAY_MS = 300L
 
         /** 이름 조회 실패·이름 미입력 폴백 표시명 — MvpProfileDefaults.NAME 과 동일 */
         const val DEFAULT_DRIVER_NAME = "기사"

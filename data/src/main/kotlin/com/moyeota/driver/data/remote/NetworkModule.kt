@@ -32,7 +32,10 @@ object NetworkModule {
         coerceInputValues = true     // null → 기본값 방어
     }
 
-    /** 앱 전역 토큰 보관소 (인메모리 — 앱 재실행 시 재로그인) */
+    /**
+     * 앱 전역 토큰 보관소. 기본은 인메모리이고, AppContainer 가 생성 시점에
+     * `attachPersistence(DriverSessionStorage)` 로 단말 저장소를 붙여 앱 재실행 후에도 세션이 유지된다.
+     */
     val tokenStore: TokenStore = TokenStore()
 
     private val baseRetrofit: Retrofit by lazy { retrofit(baseOkHttpClient()) }
