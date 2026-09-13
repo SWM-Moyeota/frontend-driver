@@ -6,18 +6,26 @@ import androidx.navigation.NavHostController
 import androidx.navigation.compose.composable
 import com.moyeota.driver.domain.repository.DriverRepository
 import com.moyeota.driver.presentation.core.Routes
+import com.moyeota.driver.presentation.core.tripRouteFor
 import kotlinx.coroutines.launch
 
 // GRP/A 가입 · 로그인 그래프 — D01, D02, D03, D03b, D04, D05, D05b
 fun NavGraphBuilder.authGraph(navController: NavHostController, repository: DriverRepository) {
     // D01 · 기사 로그인
     composable(Routes.AUTH_LOGIN) {
+        val scope = rememberCoroutineScope()
         LoginRoute(
             repository = repository,
             onApproved = {
-                // 승인 계정 — 로그인 화면을 스택에서 제거하고 홈으로
-                navController.navigate(Routes.HOME) {
-                    popUpTo(Routes.AUTH_LOGIN) { inclusive = true }
+                // 승인 계정 — 로그인 화면을 스택에서 제거하고 홈으로.
+                // 단, 로그인 시점에 진행 중이던 운행이 복원돼 있으면 홈 대신 그 운행 화면으로 보낸다
+                // (세션 만료·복구 지연으로 로그인 화면을 거쳐 온 기사가 운행을 잃지 않도록).
+                scope.launch {
+                    val trip = runCatching { repository.getActiveTrip() }.getOrNull()
+                    val destination = trip?.let { tripRouteFor(it.phase) } ?: Routes.HOME
+                    navController.navigate(destination) {
+                        popUpTo(Routes.AUTH_LOGIN) { inclusive = true }
+                    }
                 }
             },
             onPending = { navController.navigate(Routes.AUTH_REVIEW_PENDING) },

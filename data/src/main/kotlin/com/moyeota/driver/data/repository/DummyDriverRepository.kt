@@ -14,6 +14,7 @@ import com.moyeota.driver.domain.model.MissedReason
 import com.moyeota.driver.domain.model.Promotion
 import com.moyeota.driver.domain.model.QualificationCheckResult
 import com.moyeota.driver.domain.model.RatingSummary
+import com.moyeota.driver.domain.model.RestoredSession
 import com.moyeota.driver.domain.model.ReviewComment
 import com.moyeota.driver.domain.model.RouteStop
 import com.moyeota.driver.domain.model.SettlementDay
@@ -66,6 +67,13 @@ class DummyDriverRepository : DriverRepository {
             passengerCount = 1, createdAtLabel = "3분 전",
         ),
     )
+
+    /**
+     * 더미 구동에는 영속 저장소가 없다 — 앱 재실행 시 기존처럼 로그인 화면부터 시작한다.
+     * (인메모리 [activeTrip] 도 프로세스와 함께 사라지므로 복구할 운행 자체가 없다)
+     */
+    override suspend fun restoreSession(): RestoredSession =
+        RestoredSession(loggedIn = false, ongoingTrip = null)
 
     override suspend fun login(loginId: String, password: String): LoginResult {
         delay(400)

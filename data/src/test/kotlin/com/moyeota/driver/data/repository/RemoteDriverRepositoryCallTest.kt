@@ -10,7 +10,7 @@ import com.moyeota.driver.data.remote.dto.CallStatusResponseDto
 import com.moyeota.driver.data.remote.dto.CompleteRideRequestDto
 import com.moyeota.driver.data.remote.dto.DriverResultDto
 import com.moyeota.driver.data.remote.dto.LocationReportRequestDto
-import com.moyeota.driver.data.remote.dto.PartyDetailMembersDto
+import com.moyeota.driver.data.remote.dto.PartyDetailDto
 import com.moyeota.driver.data.remote.dto.PartyMemberDto
 import com.moyeota.driver.data.remote.dto.PartySummaryDto
 import com.moyeota.driver.data.remote.dto.PhoneCheckRequestDto
@@ -216,7 +216,7 @@ class RemoteDriverRepositoryCallTest {
             FakeDispatchApi(onAccept = {}) { partyDto },
             partyMembersApi = FakePartyMembersApi { partyId ->
                 assertEquals(42L, partyId)
-                PartyDetailMembersDto(
+                PartyDetailDto(
                     members = listOf(
                         PartyMemberDto(nickname = "승객검D417"),
                         PartyMemberDto(nickname = "모여타짱"),
@@ -336,9 +336,9 @@ private class FakeDispatchApi(
 
 /** 매칭방 상세를 시나리오별로 바꿔 끼우는 가짜 파티 멤버 API */
 private class FakePartyMembersApi(
-    private val respond: (Long) -> PartyDetailMembersDto,
+    private val respond: (Long) -> PartyDetailDto,
 ) : PartyMembersApi {
-    override suspend fun getPartyMembers(partyId: Long): PartyDetailMembersDto = respond(partyId)
+    override suspend fun getPartyDetail(partyId: Long): PartyDetailDto = respond(partyId)
 }
 
 private object UnusedAuthApi : AuthApi {
