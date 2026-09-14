@@ -1,13 +1,25 @@
 package com.moyeota.driver.presentation.feature.home
 
+import android.Manifest
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.provider.Settings
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -21,7 +33,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import com.moyeota.core.designsystem.component.MoyeotaDefaultCamera
 import com.moyeota.core.designsystem.component.NaverMapView
+import com.moyeota.core.designsystem.component.NoticeKind
 import com.moyeota.core.designsystem.theme.MoyeotaColor
+import com.moyeota.core.designsystem.theme.MoyeotaType
 import com.naver.maps.geometry.LatLng
 import com.naver.maps.map.NaverMap
 
@@ -33,6 +47,76 @@ internal fun formatOnlineMinutes(minutes: Int): String {
     val h = minutes / 60
     val m = minutes % 60
     return if (h > 0) "${h}시간 ${m}분" else "${m}분"
+}
+
+// ── 위치 권한 (D06 영업 시작 게이트 · D07 영업 중 권한 회수 감지) ──────────────────
+// 새 의존성 없이 플랫폼 API 로만 처리한다 (minSdk 24 → Context.checkSelfPermission 사용 가능).
+
+/** 영업에 필요한 위치 권한 — 정확/대략 중 하나만 허용돼도 측위 자체는 가능하다. */
+internal val LocationPermissions = arrayOf(
+    Manifest.permission.ACCESS_FINE_LOCATION,
+    Manifest.permission.ACCESS_COARSE_LOCATION,
+)
+
+internal fun Context.hasLocationPermission(): Boolean =
+    LocationPermissions.any { checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }
+
+/**
+ * 앱 설정 화면(권한 항목)으로 보낸다.
+ * 영구 거부 상태에서는 시스템 권한 다이얼로그가 더 이상 뜨지 않으므로 이 경로가 유일한 출구다.
+ */
+internal fun Context.openAppSettings() {
+    val intent = Intent(
+        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+        Uri.fromParts("package", packageName, null),
+    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    runCatching { startActivity(intent) }
+}
+
+/**
+ * 홈 전용 안내 배너 — 화면 전체를 에러로 덮는 대신 이 배너로만 알려 재시도 경로를 남긴다.
+ * [actionText] 를 주면 배너 안에 처리 버튼(설정 이동 등)이 붙는다.
+ *
+ * designsystem 의 `NoticeBanner` 는 액션 버튼을 받지 못하고 본문이 13sp 라,
+ * 거치대 시인성 규칙(본문 17sp · 터치 타깃 60dp)에 맞춰 home 안에서만 확장했다.
+ */
+@Composable
+internal fun HomeNotice(
+    kind: NoticeKind,
+    text: String,
+    modifier: Modifier = Modifier,
+    actionText: String? = null,
+    onAction: (() -> Unit)? = null,
+) {
+    val (background, foreground) = when (kind) {
+        NoticeKind.INFO -> MoyeotaColor.Primary50 to MoyeotaColor.Primary600
+        NoticeKind.ERROR -> MoyeotaColor.Danger50 to MoyeotaColor.Danger600
+        NoticeKind.SUCCESS -> MoyeotaColor.Success50 to MoyeotaColor.Success600
+        NoticeKind.WAITING -> MoyeotaColor.Waiting50 to MoyeotaColor.Waiting600
+    }
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(background)
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Text(text = text, style = MoyeotaType.BodyLg, color = foreground)
+        if (actionText != null && onAction != null) {
+            OutlinedButton(
+                onClick = onAction,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(60.dp),
+                shape = CircleShape,
+                border = BorderStroke(1.dp, foreground),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = foreground),
+            ) {
+                Text(text = actionText, style = MoyeotaType.ButtonLg)
+            }
+        }
+    }
 }
 
 /**

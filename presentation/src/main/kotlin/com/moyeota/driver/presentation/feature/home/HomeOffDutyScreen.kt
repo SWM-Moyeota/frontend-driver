@@ -33,7 +33,12 @@ internal fun HomeOffDutyScreen(
     /** 기사 현재 위치 — 측위 전이면 null (지도는 기본 카메라 폴백, 오버레이 숨김) */
     myLocation: LatLng?,
     startingDuty: Boolean,
+    /** 영업 시작 실패 문구 — null 이면 숨김. 화면을 덮지 않고 CTA 위 배너로만 알린다 */
+    startDutyError: String?,
+    /** 시스템 권한 요청을 거부당한 상태 — 설정 이동이 유일한 출구다(영구 거부 포함) */
+    locationPermissionRejected: Boolean,
     onStartDuty: () -> Unit,
+    onOpenAppSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -96,6 +101,19 @@ internal fun HomeOffDutyScreen(
                 style = MoyeotaType.BodyMd,
                 color = MoyeotaColor.TextMute,
             )
+        }
+
+        // 공통 규칙: 화면 단위 오류는 CTA 위 배너.
+        // 권한 거부가 먼저다 — 권한이 없으면 영업 시작 자체를 시도하지 않으므로 실패 문구는 뜨지 않는다.
+        if (locationPermissionRejected) {
+            HomeNotice(
+                kind = NoticeKind.ERROR,
+                text = "위치 권한을 허용해야 영업을 시작할 수 있어요",
+                actionText = "설정에서 허용",
+                onAction = onOpenAppSettings,
+            )
+        } else if (startDutyError != null) {
+            HomeNotice(kind = NoticeKind.ERROR, text = startDutyError)
         }
 
         PrimaryCtaButton(
