@@ -5,6 +5,7 @@ import com.moyeota.driver.domain.model.CallDetail
 import com.moyeota.driver.domain.model.CallSummary
 import com.moyeota.driver.domain.model.DriverSignUpForm
 import com.moyeota.driver.domain.model.FareResult
+import com.moyeota.driver.domain.model.DriverLocationUnavailableException
 import com.moyeota.driver.domain.model.HomeSummary
 import com.moyeota.driver.domain.model.LoginResult
 import com.moyeota.driver.domain.model.MissedCall
@@ -62,6 +63,15 @@ interface DriverRepository {
 
     // 홈 · 영업 상태 (D06~D08)
     suspend fun getHomeSummary(): HomeSummary
+
+    /**
+     * 영업 상태 전환. 시작과 종료의 실패 정책이 다르다:
+     *
+     * - `online = true`: 실측 좌표를 확보해야만 시작된다. 좌표를 못 얻으면
+     *   [DriverLocationUnavailableException], 서버 호출이 실패하면 그 예외를 **그대로 전파**한다.
+     *   어느 쪽이든 영업 상태로 전환되지 않는다 — 화면은 홈을 유지하고 배너로 알린 뒤 재시도시킨다.
+     * - `online = false`: 관대하다. 서버 호출이 실패해도 휴무로 전환한다(서버는 하트비트 TTL 로 자동 오프라인).
+     */
     suspend fun setDutyStatus(online: Boolean): HomeSummary
 
     // FCM (콜 푸시)

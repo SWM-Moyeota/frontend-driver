@@ -1,5 +1,6 @@
 package com.moyeota.driver.data.repository
 
+import android.util.Log
 import com.moyeota.driver.data.remote.AuthApi
 import com.moyeota.driver.data.remote.DispatchApi
 import com.moyeota.driver.data.remote.DispatchRules
@@ -32,6 +33,7 @@ import com.moyeota.driver.domain.model.CallDetail
 import com.moyeota.driver.domain.model.CallException
 import com.moyeota.driver.domain.model.CallSummary
 import com.moyeota.driver.domain.model.DriverAccountStatus
+import com.moyeota.driver.domain.model.DriverLocationUnavailableException
 import com.moyeota.driver.domain.model.DriverSignUpForm
 import com.moyeota.driver.domain.model.FareResult
 import com.moyeota.driver.domain.model.HomeSummary
@@ -46,6 +48,7 @@ import com.moyeota.driver.domain.model.StopKind
 import com.moyeota.driver.domain.model.TripHistoryDetail
 import com.moyeota.driver.domain.model.TripHistoryItem
 import com.moyeota.driver.domain.model.TripPhase
+import com.moyeota.driver.domain.location.DriverCoordinate
 import com.moyeota.driver.domain.location.DriverLocationSource
 import com.moyeota.driver.domain.repository.DriverRepository
 import kotlinx.coroutines.CoroutineScope
@@ -65,7 +68,9 @@ import kotlin.coroutines.cancellation.CancellationException
  *   더미 데이터 소속이므로 해당 호출 전체를 더미에 위임한다.
  *
  * 실패 정책:
- * - 조회·상태 토글(영업 on/off)은 서버 불가 시 더미로 조용히 강등 — 앱이 계속 동작한다.
+ * - 조회와 영업 **종료**(setDutyStatus(false))는 서버 불가 시 더미로 조용히 강등 — 앱이 계속 동작한다.
+ * - 영업 **시작**(setDutyStatus(true))은 강등하지 않고 예외를 전파한다. 서버가 모르는데 화면만 "영업중"이면
+ *   기사는 오지 않을 콜을 기다린다 — 실패는 실패로 보여야 한다.
  * - 가입 분기 조회(isPhoneRegistered)와 상태 전이 액션(콜 수락/거절, 탑승, 요금 확정)은 예외를 전파한다
  *   (실패 시 화면 유지 + 재시도 원칙 — 오탐 가입 방지).
  */
@@ -75,7 +80,7 @@ class RemoteDriverRepository(
     private val dispatchApi: DispatchApi,
     private val tokenStore: TokenStore,
     private val fallback: DummyDriverRepository,
-    /** 단말 실측 위치 — 미주입(테스트·더미 구동)이면 기본 좌표로 폴백한다 */
+    /** 단말 실측 위치 — 미주입(테스트·더미 구동)이면 좌표를 알 수 없는 상태로 동작한다 */
     private val locationSource: DriverLocationSource = DriverLocationSource { null },
     /** 승객 실닉네임 조회(매칭방 상세) — 미주입이면 닉네임 없이 "승객N" 표기로 동작한다 */
     private val partyMembersApi: PartyMembersApi? = null,
@@ -84,6 +89,11 @@ class RemoteDriverRepository(
      * 앱 재실행 복구가 비활성화된다.
      */
     private val sessionStorage: DriverSessionStorage? = null,
+    /**
+     * 영업 시작 시 첫 측위를 기다리는 최대 시간 — 권한 허용 직후 첫 fix 를 놓치지 않기 위한 유예.
+     * 테스트가 0 으로 줄여 대기 없이 "좌표 미상" 경로를 검증한다.
+     */
+    private val locationWaitTimeoutMs: Long = LOCATION_WAIT_TIMEOUT_MS,
 ) : DriverRepository {
 
     private var vehicleInfoLabel: String = DEFAULT_VEHICLE_LABEL
@@ -112,25 +122,46 @@ class RemoteDriverRepository(
     /** 로그인/가입 성공 후 토큰 fire-and-forget 전송용 (호출 코루틴 수명과 분리) */
     private val fcmScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    // 마지막으로 확인된 기사 좌표. [refreshLocation] 이 실측값으로 갱신하고,
-    // 측위 실패(권한 미허용·GPS 미수신) 시에는 직전 값(최초엔 기본 좌표)을 유지한다.
+    /**
+     * 마지막으로 **실측에 성공한** 기사 좌표. 측위 실패(권한 미허용·GPS 미수신) 시에는 갱신하지 않고,
+     * 한 번도 성공한 적이 없으면 null 로 남는다.
+     *
+     * 기본 좌표를 두지 않는 이유: 서버는 보고된 좌표로 콜 반경(findNearby)을 판정한다.
+     * 예전 구현은 이 자리에 강남역(37.4980/127.0276)을 넣어, 측위에 한 번도 성공하지 못한 단말이
+     * 부산에 있어도 서버에는 강남역으로 보고됐다 — 지어낸 좌표는 잘못된 배차가 된다.
+     */
     @Volatile
-    private var lastLatitude: Double = DEFAULT_LATITUDE
+    private var lastCoordinate: DriverCoordinate? = null
 
-    @Volatile
-    private var lastLongitude: Double = DEFAULT_LONGITUDE
+    /** 단말 실측 위치를 한 번 읽어 캐시를 갱신한다. 실패 시 캐시는 건드리지 않는다 */
+    private fun readCoordinate(): DriverCoordinate? =
+        locationSource.current()?.also { lastCoordinate = it }
 
     /**
      * 단말 실측 위치를 읽어 캐시를 갱신하고 전송용 좌표를 돌려준다.
-     * 측위 불가 시 직전 좌표를 그대로 쓴다 — 하트비트가 끊기면 서버 TTL(30초)이 만료돼
-     * 기사가 콜 후보에서 사라지므로, "정확한 좌표 없음"보다 "직전 좌표로라도 살아있음"이 낫다.
+     * **좌표를 알 수 없으면(한 번도 측위 성공 없음) null** — 호출부가 보고를 건너뛴다.
      */
-    private fun refreshLocation(): LocationReportRequestDto {
-        locationSource.current()?.let { coordinate ->
-            lastLatitude = coordinate.latitude
-            lastLongitude = coordinate.longitude
+    private fun refreshLocation(): LocationReportRequestDto? {
+        readCoordinate()
+        return lastCoordinate?.let { LocationReportRequestDto(it.latitude, it.longitude) }
+    }
+
+    /**
+     * 영업 시작 직전 좌표 확보 — 즉시 실패하면 [locationWaitTimeoutMs] 동안
+     * [LOCATION_WAIT_INTERVAL_MS] 간격으로 다시 묻는다.
+     *
+     * 권한을 방금 허용한 직후에는 첫 fix 가 아직 없어 [DriverLocationSource.current] 가 잠깐 null 이다.
+     * 그 짧은 구간 때문에 영업 시작이 실패하지 않도록 기다려 주되, 끝내 못 얻으면 null 로 돌려준다.
+     */
+    private suspend fun awaitCoordinate(): DriverCoordinate? {
+        var waitedMs = 0L
+        while (true) {
+            readCoordinate()?.let { return it }
+            if (waitedMs >= locationWaitTimeoutMs) return null
+            val step = minOf(LOCATION_WAIT_INTERVAL_MS, locationWaitTimeoutMs - waitedMs)
+            kotlinx.coroutines.delay(step)
+            waitedMs += step
         }
-        return LocationReportRequestDto(lastLatitude, lastLongitude)
     }
 
     // ── 세션 · 운행 복구 (앱 재실행 직후 1회) ──────────────────────────────
@@ -227,8 +258,8 @@ class RemoteDriverRepository(
             partyId = partyId,
             phase = phase,
             vehicleInfoLabel = vehicleInfoLabel,
-            driverLat = lastLatitude,
-            driverLng = lastLongitude,
+            driverLat = lastCoordinate?.latitude,
+            driverLng = lastCoordinate?.longitude,
         )
         // 캐시에 심어 이후 getActiveTrip·startRide·submitFinalFare 가 이어서 동작하게 한다
         remoteTrip = trip
@@ -510,29 +541,50 @@ class RemoteDriverRepository(
     /**
      * 실연동: POST /dispatch/online (위치 포함) · DELETE /dispatch/online — 토큰(@CurrentDriver) 기반.
      * 홈 요약 수치는 서버에 없으므로 더미가 만들고, 더미의 영업 상태를 함께 갱신해 일관성을 유지한다.
-     * 서버 불가 시 더미 상태만 전환한다 (조용한 강등).
+     *
+     * 시작과 종료의 실패 정책이 다르다 — [goOnDuty] · [goOffDuty] 참고.
      */
-    override suspend fun setDutyStatus(online: Boolean): HomeSummary {
+    override suspend fun setDutyStatus(online: Boolean): HomeSummary =
+        if (online) goOnDuty() else goOffDuty()
+
+    /**
+     * 영업 시작 — **좌표 없이는 시작하지 않는다.**
+     *
+     * 1. [awaitCoordinate] 로 실측 좌표를 확보한다(권한 허용 직후 첫 fix 대기 포함).
+     * 2. 못 얻으면 서버 호출 없이 [DriverLocationUnavailableException] — 더미 강등 금지.
+     *    서버는 이 좌표로 콜 반경을 판정하므로, 지어낸 좌표로 영업을 여는 것은 잘못된 배차와 같다.
+     * 3. 서버 goOnline 실패(네트워크·4xx·5xx)도 그대로 전파한다. 삼켜서 "영업중"으로 보이게 하면
+     *    기사는 서버가 모르는 채로 오지 않을 콜을 기다리게 된다.
+     *
+     * 어느 실패 경로에서도 [fallback] 의 영업 상태를 켜지 않는다 — 성공했을 때만 켠다.
+     */
+    private suspend fun goOnDuty(): HomeSummary {
+        val coordinate = awaitCoordinate() ?: throw DriverLocationUnavailableException()
+        dispatchApi.goOnline(LocationReportRequestDto(coordinate.latitude, coordinate.longitude))
+        startHeartbeat()
+        return fallback.setDutyStatus(online = true)
+    }
+
+    /**
+     * 영업 종료 — 기존대로 관대하게. 서버 호출이 실패해도 더미 상태는 휴무로 전환한다.
+     * 서버도 하트비트 TTL(30초) 만료로 자동 오프라인 처리하므로, 여기서 막아 봐야 기사만 갇힌다.
+     */
+    private suspend fun goOffDuty(): HomeSummary {
+        stopHeartbeat()
         try {
-            if (online) {
-                dispatchApi.goOnline(refreshLocation())
-                startHeartbeat()
-            } else {
-                stopHeartbeat()
-                dispatchApi.goOffline()
-            }
+            dispatchApi.goOffline()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            // 서버 미기동 등 — 더미 상태 전환으로 강등
+            // 서버 미기동 등 — 더미 상태 전환으로 강등 (서버는 TTL 로 자동 오프라인)
         }
-        return fallback.setDutyStatus(online)
+        return fallback.setDutyStatus(online = false)
     }
 
     /**
      * 영업중 위치 하트비트 — 서버(DriverLocationRedis)가 TTL 30초로 후보를 필터하므로,
      * 주기 보고가 없으면 영업 시작 30초 뒤부터 콜 후보에서 사라진다 (QA 리포트 18 실측).
-     * 15초 주기로 **실측 좌표**([refreshLocation])를 POST /dispatch/location 으로 보낸다 —
+     * 15초 주기로 **실측 좌표**를 POST /dispatch/location 으로 보낸다 —
      * 서버는 이 좌표로 콜 반경(findNearby)을 판정하므로 고정 좌표를 보내면 실제 위치와 무관하게 배차된다.
      * 개별 실패는 무시 — 다음 주기가 복구한다.
      * 프로세스 종료 시 루프도 함께 죽는데, 그러면 TTL 만료로 서버가 자동 오프라인 처리하므로 정합적이다.
@@ -542,14 +594,30 @@ class RemoteDriverRepository(
         heartbeatJob = fcmScope.launch {
             while (true) {
                 kotlinx.coroutines.delay(HEARTBEAT_INTERVAL_MS)
-                try {
-                    dispatchApi.reportLocation(refreshLocation())
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (_: Exception) {
-                    // 일시 실패 — 다음 주기 재시도
-                }
+                reportLocationTick()
             }
+        }
+    }
+
+    /**
+     * 하트비트 1주기. **좌표를 모르면 그 주기를 통째로 건너뛴다** — 틀린 좌표를 보내느니
+     * 보고하지 않는 편이 낫다(서버는 TTL 만료로 이 기사를 콜 후보에서 빼면 그만이다).
+     * 전송 실패는 무시 — 다음 주기가 복구한다.
+     *
+     * `internal` 인 이유는 단위 테스트가 15초를 기다리지 않고 한 주기를 직접 돌려보기 위해서다.
+     */
+    internal suspend fun reportLocationTick() {
+        val body = refreshLocation()
+        if (body == null) {
+            Log.w(TAG, "위치 미확인 — 하트비트 1주기 건너뜀 (좌표를 지어내지 않는다)")
+            return
+        }
+        try {
+            dispatchApi.reportLocation(body)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // 일시 실패 — 다음 주기 재시도
         }
     }
 
@@ -601,7 +669,7 @@ class RemoteDriverRepository(
         refreshLocation()   // 픽업 거리·ETA 를 실위치 기준으로 계산
         return try {
             dispatchApi.getPartyDetail(id)
-                .toCallSummary(lastLatitude, lastLongitude)
+                .toCallSummary(lastCoordinate?.latitude, lastCoordinate?.longitude)
                 .also { callFeed.add(it) }
         } catch (e: CancellationException) {
             throw e
@@ -659,7 +727,8 @@ class RemoteDriverRepository(
         val partyId = callId.toLongOrNull() ?: return fallback.getCallDetail(callId)
         refreshLocation()   // 픽업 거리·ETA 를 실위치 기준으로 계산
         return try {
-            dispatchApi.getPartyDetail(partyId).toCallDetail(lastLatitude, lastLongitude)
+            dispatchApi.getPartyDetail(partyId)
+                .toCallDetail(lastCoordinate?.latitude, lastCoordinate?.longitude)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -692,7 +761,7 @@ class RemoteDriverRepository(
         callFeed.remove(callId)   // 수락된 콜은 피드에서 소거 (콜 목록 재노출 방지)
         // 앱이 죽어도 이 파티로 운행을 되찾을 수 있게 단말에 남긴다 ([restoreSession])
         sessionStorage?.writeActivePartyId(partyId)
-        return party.toActiveTrip(vehicleInfoLabel, lastLatitude, lastLongitude)
+        return party.toActiveTrip(vehicleInfoLabel, lastCoordinate?.latitude, lastCoordinate?.longitude)
             .withPassengerNicknames(fetchPassengerNicknamesQuietly(partyId))
             .also { remoteTrip = it }
     }
@@ -846,8 +915,16 @@ class RemoteDriverRepository(
         const val DEFAULT_ACCOUNT_NUMBER = "000000000000"
         const val DEFAULT_VEHICLE_LABEL = "쏘나타 34가 1234"
 
-        /** 측위 전(권한 미허용·GPS 미수신) 폴백 좌표 — 강남역 */
-        const val DEFAULT_LATITUDE = 37.4980
-        const val DEFAULT_LONGITUDE = 127.0276
+        /**
+         * 영업 시작 시 첫 측위를 기다리는 최대 시간. 권한을 갓 허용한 직후 GPS 첫 fix 까지의 공백을 덮는다 —
+         * 더 길게 잡으면 「영업 시작하기」가 먹통처럼 보이고, 더 짧으면 실외에서도 헛되이 실패한다.
+         */
+        const val LOCATION_WAIT_TIMEOUT_MS = 3_000L
+
+        /** 위 대기 구간의 재시도 간격 */
+        const val LOCATION_WAIT_INTERVAL_MS = 300L
+
+        /** 위치 관련 logcat 태그 — AndroidLocationSource 와 같은 태그로 묶어 한 번에 본다 */
+        const val TAG = "MoyeotaDriverLocation"
     }
 }
