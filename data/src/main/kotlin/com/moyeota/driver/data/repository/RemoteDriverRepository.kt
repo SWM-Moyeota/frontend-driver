@@ -13,13 +13,20 @@ import com.moyeota.driver.data.remote.driverAccountStatus
 import com.moyeota.driver.data.remote.normalizePhoneNumber
 import com.moyeota.driver.data.remote.dto.CompleteRideRequestDto
 import com.moyeota.driver.data.remote.dto.LocationReportRequestDto
+import com.moyeota.driver.data.remote.dto.NicknameCheckRequestDto
 import com.moyeota.driver.data.remote.dto.PhoneCheckRequestDto
 import com.moyeota.driver.data.remote.dto.RegisterDriverRequestDto
 import com.moyeota.driver.data.remote.dto.RegisterFcmTokenRequestDto
 import com.moyeota.driver.data.remote.dto.RegisterVehicleRequestDto
+import com.moyeota.driver.data.remote.dto.SmsSendRequestDto
+import com.moyeota.driver.data.remote.dto.SmsVerifyRequestDto
 import com.moyeota.driver.data.remote.dto.TokenRequestDto
 import com.moyeota.driver.data.remote.dto.UserLoginRequestDto
+import com.moyeota.driver.data.remote.ServerErrorCodes
+import com.moyeota.driver.data.remote.authFailureMessage
+import com.moyeota.driver.data.remote.errorCode
 import com.moyeota.driver.data.remote.restorablePhase
+import com.moyeota.driver.data.remote.serverError
 import com.moyeota.driver.data.remote.serverMessage
 import com.moyeota.driver.data.remote.toActiveTrip
 import com.moyeota.driver.data.remote.toRestoredTrip
@@ -188,12 +195,14 @@ class RemoteDriverRepository(
         } catch (e: CancellationException) {
             throw e
         } catch (e: retrofit2.HttpException) {
-            when (e.code()) {
+            when {
                 // 세션 만료 — 토큰만 비운다 (운행은 재로그인 후 되살릴 수 있어야 한다)
-                401, 403 -> clearExpiredTokens()
-                // 기사 미등록 — 이 계정으로는 기사 API 자체를 쓸 수 없다(확인된 종료)
-                404 -> clearStoredSession()
-                // 5xx 등 — 저장 보존
+                e.code() == 401 || e.code() == 403 -> clearExpiredTokens()
+                // 404 는 두 가지다 — 에러 body 의 code 로만 구분된다.
+                // DRIVER_NOT_REGISTERED/DRIVER_NOT_FOUND 면 이 계정으로는 기사 API 를 쓸 수 없다(확인된 종료).
+                // code 가 없는 404(경로 미존재 — 구서버 배포·baseUrl 오설정)는 서버 사정이므로 저장을 보존한다.
+                e.code() == 404 && ServerErrorCodes.isDriverMissing(e.errorCode()) -> clearStoredSession()
+                // 5xx·정체불명 404 등 — 저장 보존
                 else -> return RestoredSession(loggedIn = true, ongoingTrip = null)
             }
             return RestoredSession(loggedIn = false, ongoingTrip = null)
@@ -232,8 +241,11 @@ class RemoteDriverRepository(
             throw e
         } catch (e: retrofit2.HttpException) {
             if (e.code() == 401 || e.code() == 403) return TripRestore.SessionExpired
-            // 404 PARTY_NOT_FOUND — 저장된 id 가 서버에 없다(확인된 종료). 그 밖의 4xx/5xx 는 저장 보존
-            if (e.code() == 404) sessionStorage.clearActivePartyId()
+            // 404 PARTY_NOT_FOUND(code 확인) — 저장된 id 가 서버에 없다(확인된 종료).
+            // code 없는 404(경로 미존재)·그 밖의 4xx/5xx 는 저장 보존 — 지우면 운행 복구 기회가 영영 사라진다.
+            if (e.code() == 404 && ServerErrorCodes.isPartyMissing(e.errorCode())) {
+                sessionStorage.clearActivePartyId()
+            }
             return TripRestore.None
         } catch (_: Exception) {
             return TripRestore.None   // 네트워크 실패 — 저장 보존
@@ -335,10 +347,7 @@ class RemoteDriverRepository(
         val driver = try {
             driverApi.getMe()
         } catch (e: retrofit2.HttpException) {
-            if (e.code() == 404) {
-                throw IllegalStateException("기사로 가입되지 않은 계정입니다. 회원가입을 진행해 주세요.", e)
-            }
-            throw IllegalStateException("기사 정보 조회 실패: ${e.serverMessage() ?: "서버 오류(${e.code()})"}", e)
+            throw driverLookupFailure(e)
         }
         // 표시 이름: drivers/me 의 name(닉네임) 우선, 구서버·미설정이면 유저 정보 조회로 폴백
         val name = driver.name?.takeIf { it.isNotBlank() }
@@ -348,6 +357,37 @@ class RemoteDriverRepository(
         rehydrateOngoingTripQuietly(driver.id)
         return LoginResult(status = driverAccountStatus(driver.status), driverName = name ?: DEFAULT_DRIVER_NAME)
     }
+
+    /**
+     * `GET /drivers/me` 실패를 사용자 문구로 바꾼다 — **404 를 "기사 미등록"으로 단정하지 않는다.**
+     *
+     * 서버가 택시 기능을 꺼두면(`moyeota.taxi.enabled=false`) 기사·배차 컨트롤러가
+     * `ConditionalOnProperty` 로 **아예 등록되지 않아** 같은 404 가 돌아온다. 그걸 미등록으로 읽으면
+     * 멀쩡한 계정의 기사에게 "회원가입을 진행하라"고 안내해 중복 가입을 시도하게 만든다.
+     * 둘은 에러 바디의 code 로만 구분되고, code 가 없는 404 는 "핸들러 없음"이다.
+     */
+    private suspend fun driverLookupFailure(e: retrofit2.HttpException): IllegalStateException {
+        val error = e.serverError()
+        if (e.code() != 404) {
+            return IllegalStateException("기사 정보 조회 실패: ${error?.message ?: "서버 오류(${e.code()})"}", e)
+        }
+        if (ServerErrorCodes.isDriverMissing(error?.code)) {
+            return IllegalStateException("기사로 가입되지 않은 계정입니다. 회원가입을 진행해 주세요.", e)
+        }
+        return IllegalStateException(driverFeatureUnavailableMessage(), e)
+    }
+
+    /**
+     * code 없는 404 전용 문구 — 서버 설정(`GET /api/v1/config`)을 한 번 읽어 원인을 좁혀 준다.
+     * taxiEnabled=false 면 "서버가 택시 기능을 끈 상태"라고 단정할 수 있고, true 면 배포 지연·경로
+     * 불일치 등으로 범위를 넓혀 안내한다. 조회 자체가 실패하면 낙관(true) 폴백이라 후자 문구가 된다.
+     */
+    private suspend fun driverFeatureUnavailableMessage(): String =
+        if (isTaxiServiceEnabled()) {
+            "서버에서 기사 기능을 사용할 수 없어요 · 잠시 후 다시 시도해 주세요"
+        } else {
+            "서버에서 택시 서비스가 꺼져 있어요 · 운영자에게 문의해 주세요"
+        }
 
     /**
      * 로그인 성공 직후 진행 중이던 운행 재수화 — **베스트에포트**.
@@ -388,28 +428,117 @@ class RemoteDriverRepository(
         }
 
     /**
+     * 실연동: POST /auth/sms/send (permitAll) → 204. 번호는 가입(register)·기가입 조회와 같은
+     * 하이픈 표준형으로 정규화해 보낸다 — 서버가 토큰에 묶는 전화번호 해시와 어긋나지 않게 한다.
+     *
+     * 실패는 전부 예외 전파 — 발송되지 않았는데 인증번호 입력 화면으로 넘기면 기사는 오지 않는 문자를 기다린다.
+     * 문구는 서버 message 를 그대로 쓴다([authFailureMessage]) — 재전송 대기(1분)·일일 한도(5회)·
+     * 이미 가입된 번호(409 USER104) 모두 서버가 사용자용 한국어로 돌려준다.
+     */
+    override suspend fun requestPhoneVerification(phoneNumber: String) {
+        try {
+            authApi.sendSmsCode(SmsSendRequestDto(normalizePhoneNumber(phoneNumber)))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: retrofit2.HttpException) {
+            throw IllegalStateException(authFailureMessage(e.serverError(), e.code(), "인증번호를 보내지 못했어요"), e)
+        } catch (e: Exception) {
+            throw IllegalStateException("인증번호를 보내지 못했어요 · ${e.message ?: "네트워크 오류"}", e)
+        }
+    }
+
+    /**
+     * 실연동: POST /auth/sms/verify (permitAll) → `{verificationToken}`.
+     *
+     * 성공의 산출물은 **가입에 실어야 하는 1회용 토큰**이다. 서버가 200 을 주면서 토큰을 비워 보내는
+     * 경우(구서버·필드명 변경)도 실패로 취급한다 — 빈 토큰으로 가입하면 400 USER207 로 떨어져
+     * 기사는 인증을 다 하고도 마지막 단계에서 막힌다. 여기서 끊어야 원인이 드러난다.
+     */
+    override suspend fun verifyPhoneCode(phoneNumber: String, code: String): String {
+        val response = try {
+            authApi.verifySmsCode(
+                SmsVerifyRequestDto(phoneNumber = normalizePhoneNumber(phoneNumber), code = code),
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: retrofit2.HttpException) {
+            throw IllegalStateException(authFailureMessage(e.serverError(), e.code(), "인증번호를 확인하지 못했어요"), e)
+        } catch (e: Exception) {
+            throw IllegalStateException("인증번호를 확인하지 못했어요 · ${e.message ?: "네트워크 오류"}", e)
+        }
+        return response.verificationToken.takeIf { it.isNotBlank() }
+            ?: throw IllegalStateException("인증이 완료되지 않았어요 · 인증번호를 다시 요청해 주세요")
+    }
+
+    /**
+     * 실연동: POST /auth/nickname/check (permitAll) → `{exists}`.
+     *
+     * 400 INVALID_NICKNAME(USER107)도 **사용 불가(true)** 로 합친다 — 화면이 알아야 하는 것은
+     * "이 닉네임으로 가입할 수 있는가" 하나이고, 형식 위반과 중복을 구분해 봐야 둘 다 막히기 때문이다.
+     * 그 밖의 실패는 예외 전파 — 미확인 닉네임을 "사용 가능"으로 통과시키면 가입 최종 단계에서
+     * 409 NICKNAME_DUPLICATED 로 떨어진다(입력을 다 끝낸 뒤라 되돌리기 비싸다).
+     */
+    override suspend fun isNicknameTaken(nickname: String): Boolean =
+        try {
+            authApi.checkNickname(NicknameCheckRequestDto(nickname.trim())).exists
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: retrofit2.HttpException) {
+            val error = e.serverError()
+            if (e.code() == 400 && error?.code == ServerErrorCodes.INVALID_NICKNAME) {
+                true
+            } else {
+                throw IllegalStateException(
+                    authFailureMessage(error, e.code(), "닉네임을 확인하지 못했어요"),
+                    e,
+                )
+            }
+        } catch (e: Exception) {
+            throw IllegalStateException("닉네임을 확인하지 못했어요 · ${e.message ?: "네트워크 오류"}", e)
+        }
+
+    /**
+     * 실연동: GET /api/v1/config → `{taxiEnabled}`. permitAll 이라 [authApi](기본 클라이언트)로 호출한다 —
+     * 미로그인 시작 화면에서도 쓰이므로 인증 클라이언트에 얹으면 Authenticator 재발급이 헛돈다.
+     *
+     * **실패는 열림(true)으로 폴백한다.** 이 값은 앱 전체를 막는 게이트라, 네트워크 한 번 흔들렸다고
+     * 정상 기사를 "서비스 준비 중" 화면에 가두는 비용이 콜 없는 홈을 보여주는 비용보다 크다.
+     */
+    override suspend fun isTaxiServiceEnabled(): Boolean =
+        try {
+            authApi.getAppConfig().taxiEnabled
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            true
+        }
+
+    /**
      * 실연동 일괄 플로우: /auth/register → /auth/login → POST /drivers(차량 정보 통합) → /drivers/verify.
      * 신스펙에서 POST /drivers 가 토큰(@CurrentUser) 기반 + 차량 정보 통합이라
      * userId 전송·별도 차량 등록 호출이 모두 사라졌다.
      *
      * 관용 처리:
-     * - register 409(이미 존재하는 아이디)는 기존 계정 재가입 시도로 보고 로그인 단계로 진행한다.
+     * - register 409 **USER101(아이디 중복)만** 기존 계정 재가입 시도로 보고 로그인 단계로 진행한다.
      * - POST /drivers 409(DRIVER_ALREADY_REGISTERED)는 GET /drivers/me 로 기존 기사를 회수해 진행한다.
      * - verify 409(DRIVER_NOT_PENDING — 이미 검증됨)는 성공으로 취급한다.
      */
     override suspend fun signUp(form: DriverSignUpForm): LoginResult {
-        // 1) 계정 생성 — 409(아이디 중복)는 기존 계정으로 보고 로그인으로 진행
-        step("계정 생성") {
-            try {
-                authApi.register(form.toRegisterRequest())
-            } catch (e: retrofit2.HttpException) {
-                if (e.code() != 409) throw e
-            }
-        }
+        // 1) 계정 생성 — 409 를 뭉뚱그려 무시하면 안 된다 ([registerOrDuplicate] 참고)
+        val duplicated = step("계정 생성") { registerOrDuplicate(form) }
 
         // 2) 자동 로그인
         val tokens = step("자동 로그인") {
-            authApi.login(UserLoginRequestDto(loginId = form.loginId, password = form.password))
+            try {
+                authApi.login(UserLoginRequestDto(loginId = form.loginId, password = form.password))
+            } catch (e: retrofit2.HttpException) {
+                // 중복으로 넘어온 뒤의 401 = 내 계정이 아니었다. 원인(중복된 항목)을 그대로 알린다 —
+                // "아이디나 비밀번호가 다릅니다"는 방금 아이디를 만든 사용자에게 아무 단서가 못 된다.
+                if (e.code() == 401 && duplicated != null) {
+                    throw IllegalStateException(duplicateAccountMessage(duplicated), e)
+                }
+                throw e
+            }
         }
         tokenStore.update(tokens.accessToken, tokens.refreshToken)
 
@@ -450,12 +579,20 @@ class RemoteDriverRepository(
     }
 
     /**
-     * 실연동: POST /auth/logout(refreshToken). 서버 호출 성공 여부와 무관하게 로컬 토큰·캐시는 항상 비운다
-     * — 서버가 죽어도 사용자는 로그아웃할 수 있어야 한다. 서버 logout 은 멱등(이미 무효화돼도 204).
+     * 실연동: DELETE /drivers/fcm-token → POST /auth/logout(refreshToken).
+     * 서버 호출 성공 여부와 무관하게 로컬 토큰·캐시는 항상 비운다 — 서버가 죽어도 사용자는
+     * 로그아웃할 수 있어야 한다. 서버 logout 은 멱등(이미 무효화돼도 204).
+     *
+     * **순서가 중요하다**: FCM 토큰 해제는 인증 구간(@CurrentDriver)이라 Bearer 가 필요하므로
+     * 토큰을 비우기 **전에**, 그리고 비동기가 아니라 기다려서 호출한다. 해제하지 않으면 서버는
+     * 이 단말을 여전히 그 기사로 알고 콜 푸시를 보내고, 로그아웃한 기사의 단말에 남의 콜이 뜬다.
      */
     override suspend fun logout() {
         stopHeartbeat()
         val refreshToken = tokenStore.refreshToken()
+        // 단말의 FCM 토큰 자체는 그대로 유효하다 — lastFcmToken 을 남겨 두면
+        // 다음 로그인/가입 때 flushFcmTokenAsync 가 그 기사 몫으로 다시 등록한다.
+        removeFcmTokenQuietly()
         clearStoredSession()   // 토큰(저장 포함) + 활성 파티 + 운행 캐시
         if (refreshToken != null) {
             try {
@@ -466,6 +603,45 @@ class RemoteDriverRepository(
                 // 서버 무효화 실패는 무시 — 로컬 세션은 이미 정리됐다
             }
         }
+    }
+
+    /**
+     * 계정 생성 1회 — 성공이면 null, **"이미 있는 계정일 수 있는" 409** 면 그 에러 코드를 돌려준다.
+     *
+     * 예전 구현은 `if (e.code() != 409) throw e` 로 **모든 409 를 무시**하고 로그인으로 넘어갔다.
+     * 서버 검사 순서는 `loginId → phoneNumber → nickname`(LocalUserService.register)이라
+     * 닉네임 중복(USER108)까지 조용히 삼키고 남의 아이디로 로그인을 시도했고, 기사에게는
+     * 엉뚱한 401("아이디나 비밀번호가 다릅니다")이 떴다.
+     *
+     * 그래서 가른다:
+     * - USER101(아이디 중복)·USER104(전화번호 중복) → **내 계정일 수 있다**. 재시도(가입 도중
+     *   기사 등록만 실패해 다시 제출하는 경우)가 정확히 이 모양이므로 로그인으로 진행한다.
+     *   내 계정이 아니면 다음 단계의 401 이 [duplicateAccountMessage] 문구로 바뀐다.
+     * - 그 밖(USER108 닉네임 중복, 400 USER207 인증 만료, 400 INVALID_REQUEST …) → **즉시 중단**.
+     *   로그인을 시도해 봐야 성공할 수 없고, 사용자는 무엇을 고쳐야 하는지 알아야 한다.
+     *
+     * 인증 토큰은 서버가 **가입 성공 후에만** 소비하므로(SmsVerificationService.consume),
+     * 여기서 중단해도 같은 토큰으로 곧바로 재제출할 수 있다.
+     */
+    private suspend fun registerOrDuplicate(form: DriverSignUpForm): String? =
+        try {
+            authApi.register(form.toRegisterRequest())
+            null
+        } catch (e: retrofit2.HttpException) {
+            val error = e.serverError()
+            val code = error?.code
+            val mayBeMyAccount = e.code() == 409 &&
+                (code == ServerErrorCodes.LOGIN_ID_DUPLICATED || code == ServerErrorCodes.PHONE_NUMBER_DUPLICATED)
+            if (mayBeMyAccount) code else {
+                throw IllegalStateException(authFailureMessage(error, e.code(), "계정을 만들지 못했어요"), e)
+            }
+        }
+
+    /** 중복 409 로 진행했는데 로그인까지 실패했을 때의 안내 — 무엇이 중복인지 집어 준다 */
+    private fun duplicateAccountMessage(duplicatedCode: String): String = when (duplicatedCode) {
+        ServerErrorCodes.LOGIN_ID_DUPLICATED -> "이미 사용 중인 아이디예요 · 다른 아이디로 다시 시도해 주세요"
+        ServerErrorCodes.PHONE_NUMBER_DUPLICATED -> "이미 가입된 전화번호예요 · 로그인 화면에서 로그인해 주세요"
+        else -> "이미 가입된 정보예요 · 로그인해 주세요"
     }
 
     /** 단계 실패를 "회원가입 실패 — {단계}: {사유}" 한국어 예외로 변환한다 */
@@ -481,12 +657,6 @@ class RemoteDriverRepository(
         } catch (e: Exception) {
             throw IllegalStateException("회원가입 실패 — $name: ${e.message ?: "네트워크 오류"}", e)
         }
-
-    /** 백엔드 미구현 — 더미 위임 (D02 화면 보존용, MVP 플로우 미사용) */
-    override suspend fun requestOtp(phone: String) = fallback.requestOtp(phone)
-
-    /** 백엔드 미구현 — 더미 위임 (D02 화면 보존용, MVP 플로우 미사용) */
-    override suspend fun verifyOtp(phone: String, code: String): Boolean = fallback.verifyOtp(phone, code)
 
     /**
      * 백엔드 미대응 — 더미 위임 (레거시 D03 경로, MVP 플로우 미사용).
@@ -697,6 +867,22 @@ class RemoteDriverRepository(
         }
     }
 
+    /**
+     * 로그아웃 시 서버 쪽 FCM 토큰 해제 (DELETE /drivers/fcm-token — 멱등, 204).
+     * 미로그인 상태면 호출하지 않는다. 실패(404 기사 미등록·네트워크)는 무시 —
+     * 로그아웃 자체를 막을 이유가 없고, 서버 토큰은 다음 로그인 때 덮어쓰인다.
+     */
+    private suspend fun removeFcmTokenQuietly() {
+        if (!tokenStore.isLoggedIn()) return
+        try {
+            driverApi.removeFcmToken()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // 무시 — 로컬 세션 정리가 우선이다
+        }
+    }
+
     /** 로그인/가입 성공 직후 보관 중인 토큰을 비동기 전송. 호출 코루틴을 막지 않는다 */
     private fun flushFcmTokenAsync() {
         val token = lastFcmToken ?: return
@@ -744,27 +930,91 @@ class RemoteDriverRepository(
     override suspend fun acceptCall(callId: String): ActiveTrip {
         val partyId = callId.toLongOrNull() ?: return fallback.acceptCall(callId)
         refreshLocation()   // 픽업까지 남은 거리·ETA 를 실위치 기준으로 계산
+
         val party = try {
             dispatchApi.getPartyDetail(partyId)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
+            // 콜 후보에서 빠진 뒤의 409 — **이미 내가 수락한 콜일 수 있다**(응답 유실 후 재시도,
+            // 더블 탭). 소유권이 확인되면 그 운행으로 들여보낸다.
+            claimOwnedTripOn409(e, callId, partyId)?.let { return it }
             throw callFailure(e, "콜 정보를 불러오지 못했어요")
         }
+
         try {
             dispatchApi.acceptCall(partyId)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
+            claimOwnedTripOn409(e, callId, partyId)?.let { return it }
             throw callFailure(e, "수락하지 못했어요")
         }
+
+        return settleAcceptedTrip(
+            callId = callId,
+            partyId = partyId,
+            trip = party.toActiveTrip(vehicleInfoLabel, lastCoordinate?.latitude, lastCoordinate?.longitude)
+                .withPassengerNicknames(fetchPassengerNicknamesQuietly(partyId)),
+        )
+    }
+
+    /**
+     * 수락 경로의 409 를 "정말 실패인가"로 되묻는다 — 409 가 아니면 null(= 그대로 실패).
+     *
+     * dispatch 의 409 CALL_CLOSED 는 **두 상황을 한 코드로 덮는다**: 다른 기사가 선점했거나,
+     * 내가 이미 수락해서 콜 후보가 비워졌거나. 서버는 수락 즉시 후보를 비우므로 응답이 유실된 뒤
+     * 재시도하면(또는 버튼을 두 번 누르면) 멀쩡히 내 것이 된 운행을 "이미 마감된 콜"로 안내하게 된다 —
+     * 기사는 배차된 승객을 태우지 못하고 홈으로 돌아간다.
+     *
+     * 그래서 콜 후보(dispatch)가 아니라 **파티 소유권**(GET /matching/rooms/{partyId} 의 taxiDriverId)을
+     * 진실의 원천으로 삼는다. 운행 복구([restoreOngoingTrip])와 같은 판정·같은 매퍼를 쓴다.
+     */
+    private suspend fun claimOwnedTripOn409(error: Throwable, callId: String, partyId: Long): ActiveTrip? {
+        if (!(error is retrofit2.HttpException && error.code() == 409)) return null
+        val trip = restoreOwnedTrip(partyId) ?: return null
+        Log.w(TAG, "수락 409 이지만 파티 소유권 확인됨 — 운행으로 복원한다 (partyId=$partyId)")
+        return settleAcceptedTrip(callId, partyId, trip)
+    }
+
+    /**
+     * 이 파티가 **내게 배정된 진행 중 운행**인지 확인하고, 맞으면 운행을 복원해 돌려준다.
+     * 확인 불가(미배선·네트워크 실패·내 기사 id 미상)나 남의 파티·이미 끝난 파티면 null —
+     * 모르면 "내 것"이라고 주장하지 않는다.
+     */
+    private suspend fun restoreOwnedTrip(partyId: Long): ActiveTrip? {
+        val api = partyMembersApi ?: return null
+        val myDriverId = quietly { driverApi.getMe().id } ?: return null
+        val party = quietly { api.getPartyDetail(partyId) } ?: return null
+        if (party.taxiDriverId == null || party.taxiDriverId != myDriverId) return null
+        val phase = restorablePhase(party.status) ?: return null   // FINISHED·CANCELED·MATCHING
+        return party.toRestoredTrip(
+            partyId = partyId,
+            phase = phase,
+            vehicleInfoLabel = vehicleInfoLabel,
+            driverLat = lastCoordinate?.latitude,
+            driverLng = lastCoordinate?.longitude,
+        )
+    }
+
+    /** 수락 성공 뒤처리 — 피드 소거 + 활성 파티 영속 + 운행 캐시. 두 경로(정상·409 복원)가 공유한다 */
+    private fun settleAcceptedTrip(callId: String, partyId: Long, trip: ActiveTrip): ActiveTrip {
         callFeed.remove(callId)   // 수락된 콜은 피드에서 소거 (콜 목록 재노출 방지)
         // 앱이 죽어도 이 파티로 운행을 되찾을 수 있게 단말에 남긴다 ([restoreSession])
         sessionStorage?.writeActivePartyId(partyId)
-        return party.toActiveTrip(vehicleInfoLabel, lastCoordinate?.latitude, lastCoordinate?.longitude)
-            .withPassengerNicknames(fetchPassengerNicknamesQuietly(partyId))
-            .also { remoteTrip = it }
+        remoteTrip = trip
+        return trip
     }
+
+    /** 베스트에포트 호출 — 실패는 null. CancellationException 은 삼키지 않는다(구조적 동시성 유지) */
+    private suspend inline fun <T> quietly(block: () -> T): T? =
+        try {
+            block()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
 
     /**
      * 승객 실닉네임 베스트에포트 조회 — GET /matching/rooms/{partyId} 의 members[].nickname.

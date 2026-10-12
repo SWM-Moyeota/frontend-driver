@@ -37,18 +37,52 @@ interface DriverRepository {
     suspend fun login(loginId: String, password: String): LoginResult
 
     /**
-     * 가입 1단계: 휴대폰 번호가 이미 user_profile 에 등록돼 있는지 조회.
-     * true 면 기존 계정 로그인 유도, false 면 신규 프로필 입력으로 진행.
-     * 백엔드 조회 API(GET /users/exists) 미구현 동안은 더미가 "미등록(false)"으로 폴백한다.
+     * 가입 1단계: 휴대폰 번호가 이미 user_profile 에 등록돼 있는지 조회 (POST /api/v1/auth/phone/check).
+     * true 면 기존 계정 로그인 유도, false 면 프로필 입력(2단계)으로 진행.
+     * 실패는 예외 전파 — 조용한 "미등록" 폴백은 중복 가입 시도로 이어진다.
      */
     suspend fun isPhoneRegistered(phoneNumber: String): Boolean
+
+    /**
+     * 가입 4단계 ①: 인증번호 문자 발송 요청 (POST /api/v1/auth/sms/send).
+     *
+     * 성공은 "발송됨"일 뿐이다 — 반환값이 없다. 실패는 사용자에게 보여줄 한국어 메시지를 담은
+     * 예외로 전파된다 (재전송 대기 1분·일일 5회 한도·이미 가입된 번호 등 서버 판정 포함).
+     */
+    suspend fun requestPhoneVerification(phoneNumber: String)
+
+    /**
+     * 가입 4단계 ②: 인증번호 확인 (POST /api/v1/auth/sms/verify).
+     *
+     * @return 가입 요청에 실어야 하는 1회용 verificationToken (서버 TTL 10분) —
+     *   [DriverSignUpForm.verificationToken] 에 넣어 **지체 없이** [signUp] 으로 넘긴다.
+     * @throws IllegalStateException 인증번호 불일치·만료·입력 횟수 초과 등. 메시지는 사용자 노출용 한국어다.
+     */
+    suspend fun verifyPhoneCode(phoneNumber: String, code: String): String
+
+    /**
+     * 가입 2단계: 닉네임 중복 확인 (POST /api/v1/auth/nickname/check).
+     *
+     * true 면 그 닉네임으로 가입할 수 없다 — 서버가 형식을 거절한 경우(2~10자 한글·영문·숫자 위반)도
+     * "사용 불가(true)"로 합친다. 화면은 가입 가능/불가만 알면 되기 때문이다.
+     * 조회 자체가 실패하면(네트워크·서버 오류) 예외 전파 — 미확인 닉네임으로 가입을 진행시키지 않는다.
+     */
+    suspend fun isNicknameTaken(nickname: String): Boolean
+
+    /**
+     * 택시(배차) 서비스 운영 여부 (GET /api/v1/config 의 taxiEnabled).
+     *
+     * false 면 서버가 기사·배차 컨트롤러를 아예 등록하지 않으므로(@ConditionalOnProperty)
+     * 기사 API 가 전부 404 다 — 404 의 원인을 "기사 미등록"과 가르는 보조 근거로 쓴다.
+     * **조회 실패 시에는 true(열림)로 폴백한다** — 일시적 네트워크 오류로 정상 기사를 앱 밖에
+     * 가두는 쪽이, 콜이 없는 화면을 보여주는 쪽보다 나쁘다.
+     */
+    suspend fun isTaxiServiceEnabled(): Boolean
 
     /** 가입 최종 제출 — 계정 생성 → 자동 로그인 → 기사 등록 → 승인 → 차량 등록 일괄 수행 */
     suspend fun signUp(form: DriverSignUpForm): LoginResult
 
     suspend fun logout()
-    suspend fun requestOtp(phone: String)
-    suspend fun verifyOtp(phone: String, code: String): Boolean
     suspend fun checkQualifications(
         licenseNumber: String,
         licenseSerial: String,

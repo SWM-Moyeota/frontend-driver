@@ -15,6 +15,12 @@ import com.moyeota.driver.data.remote.dto.PartyMemberDto
 import com.moyeota.driver.data.remote.dto.PartySummaryDto
 import com.moyeota.driver.data.remote.dto.PhoneCheckRequestDto
 import com.moyeota.driver.data.remote.dto.PhoneCheckResponseDto
+import com.moyeota.driver.data.remote.dto.AppConfigResponseDto
+import com.moyeota.driver.data.remote.dto.NicknameCheckRequestDto
+import com.moyeota.driver.data.remote.dto.NicknameCheckResponseDto
+import com.moyeota.driver.data.remote.dto.SmsSendRequestDto
+import com.moyeota.driver.data.remote.dto.SmsVerifyRequestDto
+import com.moyeota.driver.data.remote.dto.SmsVerifyResponseDto
 import com.moyeota.driver.data.remote.dto.RegisterDriverRequestDto
 import com.moyeota.driver.data.remote.dto.RegisterFcmTokenRequestDto
 import com.moyeota.driver.data.remote.dto.RegisterVehicleRequestDto
@@ -348,6 +354,10 @@ private object UnusedAuthApi : AuthApi {
     override suspend fun logout(body: TokenRequestDto) = unused()
     override suspend fun checkPhone(body: PhoneCheckRequestDto): PhoneCheckResponseDto = unused()
     override suspend fun getMyInfo(bearer: String): UserResponseDto = unused()
+    override suspend fun sendSmsCode(body: SmsSendRequestDto) = unused()
+    override suspend fun verifySmsCode(body: SmsVerifyRequestDto): SmsVerifyResponseDto = unused()
+    override suspend fun checkNickname(body: NicknameCheckRequestDto): NicknameCheckResponseDto = unused()
+    override suspend fun getAppConfig(): AppConfigResponseDto = unused()
 }
 
 private object UnusedDriverApi : DriverApi {

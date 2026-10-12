@@ -95,14 +95,31 @@ class DummyDriverRepository : DriverRepository {
         delay(200)
     }
 
-    override suspend fun requestOtp(phone: String) {
+    /** 발송된 척만 한다 — 더미는 항상 [DUMMY_VERIFICATION_CODE] 를 통과시킨다 */
+    override suspend fun requestPhoneVerification(phoneNumber: String) {
         delay(300)
     }
 
-    override suspend fun verifyOtp(phone: String, code: String): Boolean {
+    /**
+     * 고정 인증번호([DUMMY_VERIFICATION_CODE])만 통과시키고 가짜 토큰을 돌려준다.
+     * 틀린 번호는 서버와 같은 모양(사용자 노출용 한국어 예외)으로 실패시켜 화면의 에러 경로도 더미로 눌러 볼 수 있게 한다.
+     */
+    override suspend fun verifyPhoneCode(phoneNumber: String, code: String): String {
         delay(300)
-        return code.length == 6
+        if (code != DUMMY_VERIFICATION_CODE) {
+            throw IllegalStateException("인증번호가 일치하지 않습니다.")
+        }
+        return DUMMY_VERIFICATION_TOKEN
     }
+
+    /** 중복 분기 UI 테스트용으로 "박기사"만 사용 중으로 둔다 */
+    override suspend fun isNicknameTaken(nickname: String): Boolean {
+        delay(250)
+        return nickname.trim() == "박기사"
+    }
+
+    /** 더미 구동은 항상 서비스 열림 — 게이트가 더미 화면 확인을 막지 않게 한다 */
+    override suspend fun isTaxiServiceEnabled(): Boolean = true
 
     override suspend fun checkQualifications(
         licenseNumber: String,
@@ -356,5 +373,17 @@ class DummyDriverRepository : DriverRepository {
             durationMin = 38,
             distanceKm = 18.6,
         )
+    }
+
+    companion object {
+        /**
+         * 더미 구동에서 통과하는 고정 인증번호.
+         * 백엔드도 dev 프로파일에서 `moyeota.sms.fixed-code` 로 같은 방식의 고정 코드를 지원한다
+         * (SmsVerificationService) — 더미와 실연동의 수동 테스트 절차를 같게 맞춘 값이다.
+         */
+        const val DUMMY_VERIFICATION_CODE = "000000"
+
+        /** 더미 가입이 [DriverSignUpForm.verificationToken] 에 실어 보내는 가짜 토큰 */
+        const val DUMMY_VERIFICATION_TOKEN = "dummy-verification-token"
     }
 }
