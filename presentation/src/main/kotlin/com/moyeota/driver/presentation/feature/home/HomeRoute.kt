@@ -26,6 +26,8 @@ import com.moyeota.driver.presentation.core.ErrorBox
 import com.moyeota.driver.presentation.core.LoadingBox
 import com.moyeota.driver.presentation.core.TabStateScaffold
 import com.moyeota.driver.presentation.core.rememberDriverLocation
+import com.moyeota.driver.presentation.core.userMessageOr
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -48,6 +50,13 @@ class HomeViewModel(private val repository: DriverRepository) : ViewModel() {
              * 실패로 화면 전체를 Error 로 덮으면 그 자리에서 다시 시도할 수 없다.
              */
             val startDutyError: String? = null,
+            /**
+             * 서버가 택시(배차) 기능을 켜 두었는가. false 면 기사 API 가 전부 404 라
+             * 영업을 시작할 수도, 콜을 받을 수도 없다 — 홈 요약이 더미 폴백으로 "멀쩡해 보이는"
+             * 것을 막기 위해 경고 배너를 띄운다(QA D4·D-2).
+             * **조회 실패는 true(켜짐)** — 네트워크가 한 번 흔들렸다고 정상 기사에게 거짓 경고를 띄우지 않는다.
+             */
+            val taxiServiceEnabled: Boolean = true,
         ) : UiState
 
         data class Error(val message: String) : UiState
@@ -65,8 +74,10 @@ class HomeViewModel(private val repository: DriverRepository) : ViewModel() {
         viewModelScope.launch {
             try {
                 _uiState.value = load()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                _uiState.value = UiState.Error("홈 정보를 불러오지 못했어요. 다시 시도해 주세요.")
+                _uiState.value = UiState.Error(e.userMessageOr(HOME_LOAD_FAILED))
             }
         }
     }
@@ -85,6 +96,8 @@ class HomeViewModel(private val repository: DriverRepository) : ViewModel() {
         viewModelScope.launch {
             try {
                 repository.setDutyStatus(online = true)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 _uiState.value = current.copy(
                     startingDuty = false,
@@ -95,8 +108,10 @@ class HomeViewModel(private val repository: DriverRepository) : ViewModel() {
             // 영업 시작 자체는 성공 — 이후 재조회 실패는 홈 로딩 실패로 다룬다
             _uiState.value = try {
                 load()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                UiState.Error("홈 정보를 불러오지 못했어요. 다시 시도해 주세요.")
+                UiState.Error(e.userMessageOr(HOME_LOAD_FAILED))
             }
         }
     }
@@ -124,11 +139,39 @@ class HomeViewModel(private val repository: DriverRepository) : ViewModel() {
         }
     }
 
+    /**
+     * 서버 기능 비활성 여부 재확인 — 화면 재개 시점에 쓴다.
+     * 로딩 화면을 거치지 않고 배너만 제자리 갱신한다(서버가 복구되면 배너가 사라진다).
+     */
+    fun refreshServiceAvailability() {
+        if (_uiState.value !is UiState.Success) return
+        viewModelScope.launch {
+            val enabled = taxiServiceEnabled()
+            _uiState.update { state ->
+                if (state is UiState.Success) state.copy(taxiServiceEnabled = enabled) else state
+            }
+        }
+    }
+
+    /**
+     * 영업 시작 실패 문구 — 리포지토리 메시지를 우선 노출한다(QA D-4).
+     * "다시 시도해 주세요"는 서버에 기사 기능이 없는 상황에서 영원히 통하지 않는 안내였다.
+     */
     private fun startDutyErrorMessage(e: Exception): String = when (e) {
         // 권한은 있는데 아직 fix 가 없는 구간 — 실내·지하에서 흔하다. 원인을 짚어 준다.
         is DriverLocationUnavailableException -> "위치를 확인하는 중이에요 · 실외에서 잠시 후 다시 시도해 주세요"
-        else -> "영업을 시작하지 못했어요. 다시 시도해 주세요."
+        else -> e.userMessageOr("영업을 시작하지 못했어요 · 잠시 후 다시 시도해 주세요")
     }
+
+    /** 리포지토리가 이미 낙관 폴백(실패 → true)을 하지만, 취소 외의 예외는 여기서도 켜짐으로 본다 */
+    private suspend fun taxiServiceEnabled(): Boolean =
+        try {
+            repository.isTaxiServiceEnabled()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            true
+        }
 
     private suspend fun load(): UiState.Success {
         val summary = repository.getHomeSummary()
@@ -142,10 +185,17 @@ class HomeViewModel(private val repository: DriverRepository) : ViewModel() {
         } else {
             0
         }
-        return UiState.Success(summary = summary, pendingCallCount = pendingCallCount)
+        return UiState.Success(
+            summary = summary,
+            pendingCallCount = pendingCallCount,
+            // 홈 진입 1회 확인 — 재개 시점은 refreshServiceAvailability() 가 맡는다
+            taxiServiceEnabled = taxiServiceEnabled(),
+        )
     }
 
     companion object {
+        private const val HOME_LOAD_FAILED = "홈 정보를 불러오지 못했어요. 다시 시도해 주세요."
+
         fun factory(repository: DriverRepository) = viewModelFactory {
             initializer { HomeViewModel(repository) }
         }
@@ -188,6 +238,9 @@ fun HomeRoute(
     LifecycleResumeEffect(Unit) {
         // 콜 상세에서 거절·만료로 돌아오면 인입 콜 수가 달라져 있다 — 복귀 시마다 다시 읽는다
         viewModel.refreshCallCount()
+        // 서버가 기사 기능을 되살렸는지도 재개 시점에 한 번 확인한다
+        // (첫 진입 때는 아직 Loading 이라 no-op — 그 몫은 load() 가 이미 했다)
+        viewModel.refreshServiceAvailability()
         // 설정에서 허용하고 돌아온 경우 / 영업 중 권한이 회수된 경우를 재개 시점에 반영
         val granted = context.hasLocationPermission()
         locationGranted = granted
@@ -220,8 +273,10 @@ fun HomeRoute(
                     startingDuty = state.startingDuty,
                     startDutyError = state.startDutyError,
                     locationPermissionRejected = permissionRejected && !locationGranted,
+                    taxiServiceDisabled = !state.taxiServiceEnabled,
                     onStartDuty = onStartDuty,
                     onOpenAppSettings = onOpenAppSettings,
+                    onReloadHome = viewModel::refresh,
                 )
 
                 DutyStatus.ONLINE -> HomeOnDutyScreen(
@@ -229,6 +284,7 @@ fun HomeRoute(
                     myLocation = myLocation,
                     pendingCallCount = state.pendingCallCount,
                     locationPermissionMissing = !locationGranted,
+                    taxiServiceDisabled = !state.taxiServiceEnabled,
                     onCallListClick = onNavigateCallList,
                     onEndDutyClick = onNavigateOffDutyConfirm,
                     onOpenAppSettings = onOpenAppSettings,

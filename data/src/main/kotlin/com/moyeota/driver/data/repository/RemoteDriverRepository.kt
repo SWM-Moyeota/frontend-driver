@@ -199,7 +199,7 @@ class RemoteDriverRepository(
                 // 세션 만료 — 토큰만 비운다 (운행은 재로그인 후 되살릴 수 있어야 한다)
                 e.code() == 401 || e.code() == 403 -> clearExpiredTokens()
                 // 404 는 두 가지다 — 에러 body 의 code 로만 구분된다.
-                // DRIVER_NOT_REGISTERED/DRIVER_NOT_FOUND 면 이 계정으로는 기사 API 를 쓸 수 없다(확인된 종료).
+                // DRIVER_NOT_REGISTERED 면 이 계정으로는 기사 API 를 쓸 수 없다(확인된 종료).
                 // code 가 없는 404(경로 미존재 — 구서버 배포·baseUrl 오설정)는 서버 사정이므로 저장을 보존한다.
                 e.code() == 404 && ServerErrorCodes.isDriverMissing(e.errorCode()) -> clearStoredSession()
                 // 5xx·정체불명 404 등 — 저장 보존

@@ -39,6 +39,8 @@ import com.moyeota.core.designsystem.component.StatusBarMock
 import com.moyeota.core.designsystem.theme.MoyeotaColor
 import com.moyeota.core.designsystem.theme.MoyeotaType
 import com.moyeota.driver.domain.repository.DriverRepository
+import com.moyeota.driver.presentation.core.userMessageOr
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -79,11 +81,13 @@ class PhoneVerifyViewModel(private val repository: DriverRepository) : ViewModel
                     it.copy(requestingOtp = false, otpRequested = true, secondsLeft = OTP_VALID_SECONDS)
                 }
                 startTimer()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 _uiState.update {
                     it.copy(
                         requestingOtp = false,
-                        screenError = e.message ?: "인증번호를 보내지 못했어요 · 다시 시도해 주세요",
+                        screenError = e.userMessageOr("인증번호를 보내지 못했어요 · 다시 시도해 주세요"),
                     )
                 }
             }
@@ -109,11 +113,13 @@ class PhoneVerifyViewModel(private val repository: DriverRepository) : ViewModel
                 val token = repository.verifyPhoneCode(phone, code)
                 _uiState.update { it.copy(verifying = false) }
                 onVerified(token)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 _uiState.update {
                     it.copy(
                         verifying = false,
-                        otpError = e.message ?: "인증번호가 달라요 · 다시 확인해 주세요",
+                        otpError = e.userMessageOr("인증번호가 달라요 · 다시 확인해 주세요"),
                     )
                 }
             }

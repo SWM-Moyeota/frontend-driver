@@ -41,6 +41,8 @@ import com.moyeota.core.designsystem.theme.MoyeotaColor
 import com.moyeota.core.designsystem.theme.MoyeotaType
 import com.moyeota.driver.domain.model.DriverSignUpForm
 import com.moyeota.driver.domain.repository.DriverRepository
+import com.moyeota.driver.presentation.core.userMessageOr
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -111,6 +113,20 @@ class SignUpViewModel(private val repository: DriverRepository) : ViewModel() {
         val codeInvalid: Boolean = false,       // 오입력 — OTP 박스 danger 테두리
         // 제출 (인증 성공 직후 연속 호출)
         val submitting: Boolean = false,
+        /**
+         * 인증이 끝나 받아 둔 1회용 verificationToken — **제출이 실패해도 버리지 않는다.**
+         *
+         * 서버는 가입이 완전히 성공한 뒤에만 토큰을 소비하므로(SmsVerificationService.consume)
+         * 같은 토큰으로 곧바로 재제출할 수 있다. 예전 구현은 제출 실패 시 토큰을 버리고
+         * 재발송을 유도했는데, 서버 재전송 대기 60초에 걸려 429(USER202)가 나고 일일 5통 한도만
+         * 깎였다 — 정작 재시도는 못 했다(QA 32a 상위 1번).
+         */
+        val verifiedToken: String? = null,
+        /**
+         * 토큰이 만료(USER207 류)로 폐기된 상태 — 이때만 재발송이 유일한 출구다.
+         * codeSent 를 내려 OTP 입력을 열지만 **쿨다운은 그대로 둔다**(서버 레이트리밋 존중).
+         */
+        val verificationExpired: Boolean = false,
         // ④ 화면 단위 오류 — CTA 위 NoticeBanner(ERROR). 발송 · 인증 · 가입 실패 공용, 서버 메시지 노출
         val submitError: String? = null,
     )
@@ -131,11 +147,13 @@ class SignUpViewModel(private val repository: DriverRepository) : ViewModel() {
                 val registered = repository.isPhoneRegistered(formatPhoneNumber(phoneDigits))
                 _uiState.update { it.copy(checkingPhone = false, phoneRegistered = registered) }
                 if (!registered) onNewPhone()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 _uiState.update {
                     it.copy(
                         checkingPhone = false,
-                        phoneCheckError = e.message ?: "번호 확인에 실패했어요 · 다시 시도해 주세요",
+                        phoneCheckError = e.userMessageOr("번호 확인에 실패했어요 · 다시 시도해 주세요"),
                     )
                 }
             }
@@ -156,6 +174,9 @@ class SignUpViewModel(private val repository: DriverRepository) : ViewModel() {
                 codeSent = false,
                 resendCooldown = 0,
                 codeInvalid = false,
+                // 받아 둔 토큰은 **그 번호**로 인증한 것이다 — 번호가 바뀌면 USER207 이므로 버린다
+                verifiedToken = null,
+                verificationExpired = false,
                 submitError = null,
             )
         }
@@ -181,12 +202,14 @@ class SignUpViewModel(private val repository: DriverRepository) : ViewModel() {
                     )
                 }
                 if (!taken) onAvailable()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 // 조회 실패 — 진행시키지 않는다(제출 때 USER108 로 터지는 것보다 여기서 재시도가 낫다)
                 _uiState.update {
                     it.copy(
                         checkingNickname = false,
-                        nicknameCheckError = e.message ?: "닉네임 확인에 실패했어요 · 다시 시도해 주세요",
+                        nicknameCheckError = e.userMessageOr("닉네임 확인에 실패했어요 · 다시 시도해 주세요"),
                     )
                 }
             }
@@ -215,15 +238,20 @@ class SignUpViewModel(private val repository: DriverRepository) : ViewModel() {
                         sendingCode = false,
                         codeSent = true,
                         resendCooldown = RESEND_COOLDOWN_SECONDS,
+                        // 새 코드를 받았으므로 이전 인증 결과는 무효 — 새 코드로 다시 인증한다
+                        verifiedToken = null,
+                        verificationExpired = false,
                     )
                 }
                 startCooldown()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 // 발송 실패 — codeSent 를 올리지 않아 CTA 가 「인증번호 받기」로 남는다
                 _uiState.update {
                     it.copy(
                         sendingCode = false,
-                        submitError = e.message ?: "인증번호를 보내지 못했어요 · 다시 시도해 주세요",
+                        submitError = e.userMessageOr("인증번호를 보내지 못했어요 · 다시 시도해 주세요"),
                     )
                 }
             }
@@ -248,45 +276,78 @@ class SignUpViewModel(private val repository: DriverRepository) : ViewModel() {
     }
 
     /**
-     * ④ 「가입 완료」 — 인증 → 토큰 → 제출을 **한 번에** 수행한다.
+     * ④ 「인증하고 가입 완료」 / 「다시 제출」 — 인증 → 토큰 → 제출을 **한 번에** 수행한다.
      * 토큰이 10분 만료라 중간에 사용자 입력을 끼우지 않는 것이 요점.
+     *
+     * 이미 [UiState.verifiedToken] 을 들고 있으면(= 인증은 됐고 제출만 실패한 재시도) 인증을
+     * 건너뛰고 그 토큰으로 바로 제출한다. 서버가 토큰을 가입 성공 후에만 소비하므로 유효하다.
      */
     fun verifyAndSignUp(form: DriverSignUpForm, code: String, onSignedUp: () -> Unit) {
         val current = _uiState.value
         if (current.verifying || current.submitting) return
         viewModelScope.launch {
-            _uiState.update { it.copy(verifying = true, codeInvalid = false, submitError = null) }
-            val token = try {
-                repository.verifyPhoneCode(form.phoneNumber, code)
-            } catch (e: Exception) {
-                _uiState.update {
-                    it.copy(
-                        verifying = false,
-                        codeInvalid = true,
-                        submitError = e.message ?: "인증번호가 달라요 · 다시 확인해 주세요",
-                    )
+            val token = current.verifiedToken ?: run {
+                _uiState.update { it.copy(verifying = true, codeInvalid = false, submitError = null) }
+                try {
+                    repository.verifyPhoneCode(form.phoneNumber, code)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    _uiState.update {
+                        it.copy(
+                            verifying = false,
+                            codeInvalid = true,
+                            submitError = e.userMessageOr("인증번호가 달라요 · 다시 확인해 주세요"),
+                        )
+                    }
+                    return@launch
                 }
-                return@launch
             }
-            _uiState.update { it.copy(verifying = false, submitting = true) }
+            // 토큰을 state 에 먼저 박아 둔다 — 아래 제출이 실패해도 「다시 제출」이 이 값을 쓴다
+            _uiState.update {
+                it.copy(
+                    verifying = false,
+                    submitting = true,
+                    verifiedToken = token,
+                    verificationExpired = false,
+                    codeInvalid = false,
+                    submitError = null,
+                )
+            }
             try {
                 repository.signUp(form.copy(verificationToken = token))
-                _uiState.update { it.copy(submitting = false) }
+                // 성공 — 서버가 토큰을 소비했으므로 들고 있을 이유가 없다
+                _uiState.update { it.copy(submitting = false, verifiedToken = null) }
                 onSignedUp()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                // 인증 토큰은 1회용 — 제출이 실패하면 처음부터 다시 인증해야 한다.
-                // 발송 상태 · 쿨다운을 풀어 바로 재전송할 수 있게 하고, 입력값은 전부 보존한다.
-                cooldownJob?.cancel()
-                _uiState.update {
-                    it.copy(
-                        submitting = false,
-                        codeSent = false,
-                        resendCooldown = 0,
-                        submitError = e.message ?: "가입에 실패했어요 · 인증번호를 다시 받아 주세요",
-                    )
-                }
+                _uiState.update { it.afterSignUpFailure(e) }
             }
         }
+    }
+
+    /**
+     * 제출 실패 상태 전이 — **토큰과 쿨다운을 지키는 것**이 요점이다.
+     *
+     * 서버는 가입이 완전히 성공한 뒤에만 토큰을 소비하므로, 닉네임 중복·네트워크 오류 등으로
+     * 중간에 끊긴 실패는 같은 토큰으로 바로 재제출할 수 있다(「다시 제출」). 쿨다운도 리셋하지
+     * 않는다 — 풀어 주면 서버 재전송 대기 60초에 걸려 429 가 나고 일일 5통만 깎인다.
+     *
+     * 만료가 분명할 때만([indicatesVerificationExpired]) 토큰을 버리고 재발송 경로를 연다.
+     * 그때도 쿨다운은 그대로 흐르게 두어, 남은 초가 지난 뒤에 「인증번호 다시 받기」가 열린다.
+     */
+    private fun UiState.afterSignUpFailure(e: Exception): UiState {
+        val message = e.userMessageOr("가입에 실패했어요 · 「다시 제출」로 한 번 더 시도해 주세요")
+        val expired = indicatesVerificationExpired(message)
+        return copy(
+            submitting = false,
+            verifiedToken = if (expired) null else verifiedToken,
+            verificationExpired = expired,
+            codeSent = if (expired) false else codeSent,
+            codeInvalid = false,
+            submitError = message,
+        )
     }
 
     companion object {
@@ -355,6 +416,7 @@ fun SignUpScreen(
 
     // ④ 진입 시 자동 1회 발송 — ①에서 번호를 이미 받았으니 한 번 더 누르게 하지 않는다.
     // 재진입(③↔④ 왕복) 시에는 codeSent · 쿨다운 가드가 중복 발송을 막는다.
+    // 제출 실패로 돌아온 경우도 키(step·번호)가 그대로여서 재발송되지 않는다 — 문자 한 통을 아낀다.
     LaunchedEffect(step, phoneDigits) {
         if (step == 4 && !state.codeSent && !state.sendingCode && state.resendCooldown == 0) {
             code = ""
@@ -362,7 +424,14 @@ fun SignUpScreen(
         }
     }
 
+    // 토큰이 만료로 폐기되면 이전 코드는 더 쓸 수 없다 — 입력을 비워 재발송을 유도한다
+    LaunchedEffect(state.verificationExpired) {
+        if (state.verificationExpired) code = ""
+    }
+
     val busy = state.checkingPhone || state.checkingNickname || state.verifying || state.submitting
+    // 인증은 끝났고 제출만 실패한 상태 — ④의 CTA·문구·OTP 입력이 "재제출" 모드로 바뀐다
+    val holdsVerifiedToken = state.verifiedToken != null
     val nicknameTrimmed = nickname.trim()
     val profileValid = name.isNotBlank() && isValidNickname(nicknameTrimmed) &&
         isValidLoginId(loginId) && isValidPassword(password)
@@ -446,6 +515,8 @@ fun SignUpScreen(
                     sendingCode = state.sendingCode,
                     resendCooldown = state.resendCooldown,
                     codeInvalid = state.codeInvalid,
+                    verified = holdsVerifiedToken,
+                    verificationExpired = state.verificationExpired,
                     // 재전송하면 새 코드가 오므로 이전에 넣은 숫자를 비운다
                     onSendCode = {
                         code = ""
@@ -499,7 +570,8 @@ fun SignUpScreen(
                         Spacer(Modifier.height(12.dp))
                     }
                     PrimaryCtaButton(
-                        text = "인증하고 가입 완료",
+                        // 인증이 끝난 뒤 제출만 실패한 경우 — 인증번호를 다시 넣을 필요가 없다
+                        text = if (holdsVerifiedToken) "다시 제출" else "인증하고 가입 완료",
                         onClick = {
                             onSubmit(
                                 DriverSignUpForm(
@@ -518,7 +590,9 @@ fun SignUpScreen(
                                 code,
                             )
                         },
-                        enabled = state.codeSent && code.length == OTP_CODE_LENGTH && taxiValid,
+                        // 토큰을 들고 있으면 코드 입력과 무관하게 재제출할 수 있다
+                        enabled = taxiValid &&
+                            (holdsVerifiedToken || (state.codeSent && code.length == OTP_CODE_LENGTH)),
                         loading = state.verifying || state.submitting,
                     )
                 }
