@@ -14,6 +14,12 @@ import com.moyeota.driver.data.remote.dto.PartyMemberDto
 import com.moyeota.driver.data.remote.dto.PartySummaryDto
 import com.moyeota.driver.data.remote.dto.PhoneCheckRequestDto
 import com.moyeota.driver.data.remote.dto.PhoneCheckResponseDto
+import com.moyeota.driver.data.remote.dto.AppConfigResponseDto
+import com.moyeota.driver.data.remote.dto.NicknameCheckRequestDto
+import com.moyeota.driver.data.remote.dto.NicknameCheckResponseDto
+import com.moyeota.driver.data.remote.dto.SmsSendRequestDto
+import com.moyeota.driver.data.remote.dto.SmsVerifyRequestDto
+import com.moyeota.driver.data.remote.dto.SmsVerifyResponseDto
 import com.moyeota.driver.data.remote.dto.RegisterDriverRequestDto
 import com.moyeota.driver.data.remote.dto.RegisterFcmTokenRequestDto
 import com.moyeota.driver.data.remote.dto.RegisterVehicleRequestDto
@@ -124,9 +130,11 @@ class RemoteDriverRepositorySessionTest {
 
     @Test
     fun `기사 미등록(404)이면 저장을 비우고 재로그인으로 보낸다`() = runBlocking {
-        // 계정은 있지만 기사 레코드가 없다 — 홈에 들여보내면 이후 모든 기사 API 가 404 로 깨진다
+        // 계정은 있지만 기사 레코드가 없다 — 홈에 들여보내면 이후 모든 기사 API 가 404 로 깨진다.
+        // **code 가 DRIVER_NOT_REGISTERED 일 때만** 이 판정이다 (code 없는 404 = 핸들러 없음은
+        // 저장을 보존한다 — RemoteDriverRepositoryAuthSyncTest 가 그 짝을 검증한다).
         val storage = FakeSessionStorage(tokens = SessionTokens("a", "r"), activePartyId = 42)
-        val repository = repository(storage, driverApi = SessionDriverApi { throw http(404) })
+        val repository = repository(storage, driverApi = SessionDriverApi { throw coded(404, "DRIVER_NOT_REGISTERED") })
 
         val restored = repository.restoreSession()
 
@@ -298,7 +306,8 @@ class RemoteDriverRepositorySessionTest {
     @Test
     fun `서버에 없는 파티(404)는 저장에서 지운다`() = runBlocking {
         val storage = FakeSessionStorage(tokens = SessionTokens("a", "r"), activePartyId = 42)
-        val repository = repository(storage, partyMembersApi = SessionPartyApi { throw http(404) })
+        // PARTY_NOT_FOUND 코드일 때만 "확인된 종료" — 그 밖의 404 는 저장을 보존한다
+        val repository = repository(storage, partyMembersApi = SessionPartyApi { throw coded(404, "PARTY_NOT_FOUND") })
 
         val restored = repository.restoreSession()
 
@@ -405,6 +414,14 @@ class RemoteDriverRepositorySessionTest {
             """{"code":"ERROR","message":"서버 메시지"}""".toResponseBody("application/json".toMediaTypeOrNull()),
         ),
     )
+
+    /** 백엔드 도메인 에러 코드를 담은 응답 — 404 판정은 이 code 로만 갈린다 */
+    private fun coded(status: Int, code: String) = HttpException(
+        Response.error<PartyDetailDto>(
+            status,
+            """{"code":"$code","message":"서버 메시지"}""".toResponseBody("application/json".toMediaTypeOrNull()),
+        ),
+    )
 }
 
 /** 인메모리 세션 저장소 — 실제 구현(SharedPreferences)의 읽기/쓰기/삭제 계약만 흉내 낸다 */
@@ -471,6 +488,10 @@ private class SessionAuthApi : AuthApi {
     override suspend fun logout(body: TokenRequestDto) = Unit   // 로그아웃 검증에서 실제로 호출된다
     override suspend fun checkPhone(body: PhoneCheckRequestDto): PhoneCheckResponseDto = unusedSession()
     override suspend fun getMyInfo(bearer: String): UserResponseDto = unusedSession()
+    override suspend fun sendSmsCode(body: SmsSendRequestDto) = unusedSession()
+    override suspend fun verifySmsCode(body: SmsVerifyRequestDto): SmsVerifyResponseDto = unusedSession()
+    override suspend fun checkNickname(body: NicknameCheckRequestDto): NicknameCheckResponseDto = unusedSession()
+    override suspend fun getAppConfig(): AppConfigResponseDto = unusedSession()
 }
 
 private fun unusedSession(): Nothing = error("이 테스트에서 호출되지 않아야 하는 API")

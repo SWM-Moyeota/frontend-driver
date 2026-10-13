@@ -1,9 +1,7 @@
 package com.moyeota.driver.presentation.feature.auth
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -13,8 +11,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
@@ -26,7 +22,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
@@ -44,6 +39,8 @@ import com.moyeota.core.designsystem.component.StatusBarMock
 import com.moyeota.core.designsystem.theme.MoyeotaColor
 import com.moyeota.core.designsystem.theme.MoyeotaType
 import com.moyeota.driver.domain.repository.DriverRepository
+import com.moyeota.driver.presentation.core.userMessageOr
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -53,7 +50,11 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 // D02 · 기사 회원가입 — 휴대폰 인증 (피그마 2511:452)
-// 진입: D01 「기사 회원가입」. 「다음」(verifyOtp 성공 + 필수 약관 2개) → D03 자격 조회.
+// 진입: D01 「기사 회원가입」. 「다음」(인증 성공 + 필수 약관 2개) → D03 자격 조회.
+//
+// 현재 라우트(Routes.AUTH_PHONE)는 고아 상태다 — 실제 가입은 AUTH_SIGNUP 4단계의 ④ 스텝이
+// 담당하고, 이 화면은 D02 피그마 대조용으로 보존한다. 6자리 입력 UI(OtpCodeInput)는
+// AuthCommon.kt 로 올려 ④ 스텝(PhoneCodeStep.kt)과 공유한다.
 
 class PhoneVerifyViewModel(private val repository: DriverRepository) : ViewModel() {
 
@@ -62,7 +63,7 @@ class PhoneVerifyViewModel(private val repository: DriverRepository) : ViewModel
         val otpRequested: Boolean = false,
         val secondsLeft: Int = 0,            // 인증번호 유효 시간 (3분)
         val verifying: Boolean = false,
-        val otpError: String? = null,        // 오입력 — OtpInput error 상태
+        val otpError: String? = null,        // 오입력 — OtpCodeInput error 상태
         val screenError: String? = null,     // 화면 단위 오류 — CTA 위 error 배너
     )
 
@@ -75,14 +76,19 @@ class PhoneVerifyViewModel(private val repository: DriverRepository) : ViewModel
         viewModelScope.launch {
             _uiState.update { it.copy(requestingOtp = true, otpError = null, screenError = null) }
             try {
-                repository.requestOtp(phone)
+                repository.requestPhoneVerification(phone)
                 _uiState.update {
                     it.copy(requestingOtp = false, otpRequested = true, secondsLeft = OTP_VALID_SECONDS)
                 }
                 startTimer()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 _uiState.update {
-                    it.copy(requestingOtp = false, screenError = "인증번호를 보내지 못했어요 · 다시 시도해 주세요")
+                    it.copy(
+                        requestingOtp = false,
+                        screenError = e.userMessageOr("인증번호를 보내지 못했어요 · 다시 시도해 주세요"),
+                    )
                 }
             }
         }
@@ -98,21 +104,23 @@ class PhoneVerifyViewModel(private val repository: DriverRepository) : ViewModel
         }
     }
 
-    fun verify(phone: String, code: String, onVerified: () -> Unit) {
+    /** 성공 시 서버 verificationToken 을 [onVerified] 로 넘긴다 (10분 만료 — 받는 쪽이 바로 써야 한다) */
+    fun verify(phone: String, code: String, onVerified: (verificationToken: String) -> Unit) {
         if (_uiState.value.verifying) return
         viewModelScope.launch {
             _uiState.update { it.copy(verifying = true, otpError = null, screenError = null) }
             try {
-                val ok = repository.verifyOtp(phone, code)
+                val token = repository.verifyPhoneCode(phone, code)
                 _uiState.update { it.copy(verifying = false) }
-                if (ok) {
-                    onVerified()
-                } else {
-                    _uiState.update { it.copy(otpError = "인증번호가 달라요 · 다시 확인해 주세요") }
-                }
+                onVerified(token)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 _uiState.update {
-                    it.copy(verifying = false, screenError = "인증에 실패했어요 · 잠시 후 다시 시도해 주세요")
+                    it.copy(
+                        verifying = false,
+                        otpError = e.userMessageOr("인증번호가 달라요 · 다시 확인해 주세요"),
+                    )
                 }
             }
         }
@@ -130,7 +138,7 @@ class PhoneVerifyViewModel(private val repository: DriverRepository) : ViewModel
 fun PhoneVerifyRoute(
     repository: DriverRepository,
     onBack: () -> Unit,
-    onVerified: () -> Unit,
+    onVerified: (verificationToken: String) -> Unit,
 ) {
     val viewModel: PhoneVerifyViewModel = viewModel(factory = PhoneVerifyViewModel.factory(repository))
     val state by viewModel.uiState.collectAsState()
@@ -158,7 +166,8 @@ fun PhoneVerifyScreen(
 
     val expired = state.otpRequested && state.secondsLeft == 0
     // 코드 6자리 + 필수 약관 2개 + 인증번호 발송 완료(미만료)까지 CTA disabled
-    val canSubmit = state.otpRequested && !expired && code.length == 6 && agreeTerms && agreeLocation
+    val canSubmit = state.otpRequested && !expired &&
+        code.length == OTP_CODE_LENGTH && agreeTerms && agreeLocation
 
     Column(modifier = Modifier.fillMaxSize().background(MoyeotaColor.SurfaceCanvas)) {
         StatusBarMock()
@@ -198,7 +207,8 @@ fun PhoneVerifyScreen(
                     enabled = phone.length == 11 && name.isNotBlank() && !state.requestingOtp,
                 )
             }
-            OtpInput(
+            // 6자리 입력 UI 는 AuthCommon.OtpCodeInput 공용 — 가입 ④ 스텝과 동일 컴포저블
+            OtpCodeInput(
                 code = code,
                 onCodeChange = { code = it },
                 error = state.otpError != null,
@@ -247,55 +257,4 @@ fun PhoneVerifyScreen(
             )
         }
     }
-}
-
-// 6자리 인증번호 입력 — 승객 v15/OtpInput 대응 (auth 전용)
-@Composable
-private fun OtpInput(
-    code: String,
-    onCodeChange: (String) -> Unit,
-    error: Boolean,
-    enabled: Boolean,
-    modifier: Modifier = Modifier,
-) {
-    BasicTextField(
-        value = code,
-        onValueChange = { onCodeChange(it.filter(Char::isDigit).take(6)) },
-        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
-        enabled = enabled,
-        modifier = modifier.fillMaxWidth(),
-        decorationBox = { innerTextField ->
-            Box {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    repeat(6) { index ->
-                        val filled = index < code.length
-                        val borderColor = when {
-                            error -> MoyeotaColor.Danger500
-                            filled -> MoyeotaColor.Primary500
-                            else -> MoyeotaColor.Hairline
-                        }
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(60.dp)
-                                .background(MoyeotaColor.SurfaceCard, RoundedCornerShape(14.dp))
-                                .border(1.dp, borderColor, RoundedCornerShape(14.dp)),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Text(
-                                text = code.getOrNull(index)?.toString() ?: "",
-                                style = MoyeotaType.NumberMd,
-                                color = if (error) MoyeotaColor.Danger500 else MoyeotaColor.InkPrimary,
-                            )
-                        }
-                    }
-                }
-                // 실제 입력 필드는 투명하게 겹쳐 두고 박스 UI 로 표시한다
-                Box(Modifier.matchParentSize().alpha(0f)) { innerTextField() }
-            }
-        },
-    )
 }

@@ -1,5 +1,6 @@
 package com.moyeota.driver.data.remote
 
+import com.moyeota.driver.data.BuildConfig
 import com.moyeota.driver.data.remote.auth.AuthHeaderInterceptor
 import com.moyeota.driver.data.remote.auth.TokenAuthenticator
 import com.moyeota.driver.data.remote.auth.TokenStore
@@ -26,6 +27,17 @@ object NetworkModule {
 
     /** 배포 백엔드(CloudFront/HTTPS). 로컬 개발 시 주석의 에뮬레이터 주소로 바꿔 쓴다 */
     const val BASE_URL = "https://api.moyeota.p-e.kr/" // 배포 서버. 로컬 백엔드는 "http://10.0.2.2:8080/" (에뮬레이터)
+
+    /**
+     * HTTP 로깅 레벨 — **디버그 빌드에서만 BODY**.
+     *
+     * 이 앱이 주고받는 바디에는 accessToken·refreshToken·전화번호·인증번호 6자리·비밀번호가 들어간다.
+     * BODY 고정이면 릴리즈 단말의 logcat 에 그게 평문으로 남고, logcat 은 같은 기기의 다른 앱이
+     * 읽을 수 없게 보호되는 저장소가 아니다(버그 리포트·로그 수집 도구로도 빠져나간다).
+     * 릴리즈에서는 NONE — 헤더만 남겨도 Authorization 이 노출되므로 BASIC 도 쓰지 않는다.
+     */
+    private val LOG_LEVEL: HttpLoggingInterceptor.Level =
+        if (BuildConfig.DEBUG) HttpLoggingInterceptor.Level.BODY else HttpLoggingInterceptor.Level.NONE
 
     private val json = Json {
         ignoreUnknownKeys = true     // 서버 필드 추가에 관대
@@ -69,9 +81,7 @@ object NetworkModule {
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(20, TimeUnit.SECONDS)
             .writeTimeout(20, TimeUnit.SECONDS)
-            .addInterceptor(
-                HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BODY },
-            )
+            .addInterceptor(HttpLoggingInterceptor().apply { level = LOG_LEVEL })
             .build()
 
     private fun authedOkHttpClient(): OkHttpClient =

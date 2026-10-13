@@ -11,6 +11,12 @@ android {
         minSdk = 24
     }
 
+    // NetworkModule 이 로깅 레벨을 빌드 타입별로 가르기 위해 필요하다
+    // (디버그 BODY / 릴리즈 NONE — 토큰·전화번호·인증번호가 릴리즈 logcat 에 남지 않게 한다).
+    buildFeatures {
+        buildConfig = true
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11

@@ -36,6 +36,11 @@ internal fun HomeOnDutyScreen(
     pendingCallCount: Int,
     /** 영업 중인데 위치 권한이 회수된 상태 — 좌표 보고가 끊겨 TTL 로 자동 오프라인된다 */
     locationPermissionMissing: Boolean,
+    /**
+     * 서버가 택시(배차) 기능을 끈 상태 — 영업중으로 보이더라도 콜이 들어올 수 없다.
+     * 홈 요약이 더미 폴백으로 "멀쩡한 영업중"처럼 보이는 것을 막는 배너다(QA D4).
+     */
+    taxiServiceDisabled: Boolean,
     onCallListClick: () -> Unit,
     onEndDutyClick: () -> Unit,
     onOpenAppSettings: () -> Unit,
@@ -63,15 +68,30 @@ internal fun HomeOnDutyScreen(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 StatusBadge(
-                    kind = if (locationPermissionMissing) NoticeKind.ERROR else NoticeKind.INFO,
-                    text = if (locationPermissionMissing) "위치 꺼짐" else "콜 대기",
+                    kind = if (locationPermissionMissing || taxiServiceDisabled) {
+                        NoticeKind.ERROR
+                    } else {
+                        NoticeKind.INFO
+                    },
+                    text = when {
+                        locationPermissionMissing -> "위치 꺼짐"
+                        taxiServiceDisabled -> "콜 중단"
+                        else -> "콜 대기"
+                    },
                 )
                 // 토글 off → D08 영업 종료 확인
                 DutyToggle(checked = true, onToggle = onEndDutyClick)
             }
         }
 
-        // 영업 중 권한 회수 — 콜이 안 들어오는 진짜 이유라 지도보다 위에 둔다.
+        // 콜이 안 들어오는 진짜 이유라 지도보다 위에 둔다.
+        // 서버 기능 비활성은 기사가 손쓸 수 없는 쪽이라 액션 버튼 없이 사실만 알린다.
+        if (taxiServiceDisabled) {
+            HomeNotice(
+                kind = NoticeKind.ERROR,
+                text = "서버에서 기사 기능이 꺼져 있어요 · 지금은 콜을 받을 수 없어요",
+            )
+        }
         if (locationPermissionMissing) {
             HomeNotice(
                 kind = NoticeKind.ERROR,
@@ -118,6 +138,7 @@ internal fun HomeOnDutyScreen(
             }
             Text(
                 text = when {
+                    taxiServiceDisabled -> "서버가 기사 기능을 다시 켜면 콜이 들어와요"
                     locationPermissionMissing -> "위치 권한을 다시 켜면 콜이 들어와요"
                     pendingCallCount > 0 -> "합승 콜은 수락 시 건당 보너스 1,500원까지 함께 정산돼요"
                     else -> "콜이 들어오면 수락 화면이 자동으로 열려요"
