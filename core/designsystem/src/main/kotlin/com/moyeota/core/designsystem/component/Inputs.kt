@@ -39,6 +39,8 @@ fun MoyeotaTextField(
     singleLine: Boolean = true,
     enabled: Boolean = true,
     trailing: (@Composable () -> Unit)? = null,
+    /** 포커스 변화 통보 — 포커스 아웃 시점에 중복 조회 등을 걸기 위한 선택 훅 */
+    onFocusChange: ((focused: Boolean) -> Unit)? = null,
 ) {
     var focused by remember { mutableStateOf(false) }
     val borderColor = when {
@@ -69,7 +71,12 @@ fun MoyeotaTextField(
                 enabled = enabled,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .onFocusChanged { focused = it.isFocused },
+                    .onFocusChanged {
+                        if (focused != it.isFocused) {
+                            focused = it.isFocused
+                            onFocusChange?.invoke(it.isFocused)
+                        }
+                    },
             )
             if (value.isEmpty()) {
                 Text(text = placeholder, style = MoyeotaType.BodyMd, color = MoyeotaColor.TextAsh)
