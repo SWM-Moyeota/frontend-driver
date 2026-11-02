@@ -16,12 +16,16 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.moyeota.core.designsystem.theme.MoyeotaColor
 import com.moyeota.core.designsystem.theme.MoyeotaType
@@ -182,3 +186,63 @@ internal fun RadioOption(
         )
     }
 }
+
+/**
+ * 6자리 문자 인증번호 입력 — 승객 v15/OtpInput 대응.
+ *
+ * D02(휴대폰 인증 단독 화면)와 가입 4단계 ④(문자 인증 스텝)가 **같은 입력 UI**를 쓰도록
+ * 이 파일로 올려 둔 공용 요소다. 숫자만 6자리까지 받고, 실제 입력 필드는 투명하게 겹쳐
+ * 박스 6칸으로 표시한다. 박스 높이 60dp = 터치 타깃 하한.
+ */
+@Composable
+internal fun OtpCodeInput(
+    code: String,
+    onCodeChange: (String) -> Unit,
+    error: Boolean,
+    enabled: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    BasicTextField(
+        value = code,
+        onValueChange = { onCodeChange(it.filter(Char::isDigit).take(OTP_CODE_LENGTH)) },
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+        enabled = enabled,
+        modifier = modifier.fillMaxWidth(),
+        decorationBox = { innerTextField ->
+            Box {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    repeat(OTP_CODE_LENGTH) { index ->
+                        val filled = index < code.length
+                        val borderColor = when {
+                            error -> MoyeotaColor.Danger500
+                            filled -> MoyeotaColor.Primary500
+                            else -> MoyeotaColor.Hairline
+                        }
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(60.dp)
+                                .background(MoyeotaColor.SurfaceCard, RoundedCornerShape(14.dp))
+                                .border(1.dp, borderColor, RoundedCornerShape(14.dp)),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                text = code.getOrNull(index)?.toString() ?: "",
+                                style = MoyeotaType.NumberMd,
+                                color = if (error) MoyeotaColor.Danger500 else MoyeotaColor.InkPrimary,
+                            )
+                        }
+                    }
+                }
+                // 실제 입력 필드는 투명하게 겹쳐 두고 박스 UI 로 표시한다
+                Box(Modifier.matchParentSize().alpha(0f)) { innerTextField() }
+            }
+        },
+    )
+}
+
+/** 인증번호 자릿수 — 서버 발송 코드와 동일 */
+internal const val OTP_CODE_LENGTH = 6

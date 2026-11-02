@@ -10,8 +10,15 @@ data class LoginResult(
 )
 
 /**
- * 기사 가입 폼 (phone-first 3단계) — ①휴대폰 확인 → ②프로필(이름·아이디·비밀번호) → ③택시 정보.
- * 휴대폰 OTP 인증·면허 자동 조회는 MVP 범위에서 제외 (번호 존재 조회만 수행).
+ * 기사 가입 폼 (phone-first 4단계) —
+ * ①휴대폰 번호 → ②프로필(이름·닉네임·아이디·비밀번호) → ③택시 정보 → ④문자 인증 → 제출.
+ *
+ * 면허 자동 조회는 MVP 범위에서 제외. 휴대폰은 ①에서 기가입 여부를 조회하고,
+ * ④에서 실제 문자 인증([DriverRepository.verifyPhoneCode])을 거쳐 [verificationToken] 을 받는다 —
+ * 서버 가입(POST /api/v1/auth/register)이 이 토큰을 필수로 요구한다.
+ *
+ * **문자 인증이 마지막 단계인 이유**: 토큰 유효기간이 10분(서버 VERIFIED_TTL)이다. 인증을 앞단에
+ * 두면 ②③ 입력 중 만료돼 제출이 400 USER207 로 터지므로, 인증 성공 직후 곧바로 제출한다.
  */
 data class DriverSignUpForm(
     val phoneNumber: String,          // 1단계 입력 — user_profile 조회 키
@@ -23,6 +30,11 @@ data class DriverSignUpForm(
     val seats: Int,                   // 좌석수 (백엔드 검증: 2 이상)
     val plateNumber: String,          // 번호판(차량번호)
     val qualificationNumber: String,  // 운수종사자 번호
+    /**
+     * 4단계 문자 인증 성공 시 받은 1회용 토큰 (서버 TTL 10분).
+     * 가입 요청에 그대로 실린다 — 비어 있거나 만료되면 서버가 400 USER207(휴대폰 인증이 필요합니다)로 거절한다.
+     */
+    val verificationToken: String,
 )
 
 /** D03 자동 조회 결과. 전 항목 통과 시에만 즉시 승인(D05b), 하나라도 실패면 예외 심사(D05). */

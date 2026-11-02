@@ -37,8 +37,16 @@ internal fun HomeOffDutyScreen(
     startDutyError: String?,
     /** 시스템 권한 요청을 거부당한 상태 — 설정 이동이 유일한 출구다(영구 거부 포함) */
     locationPermissionRejected: Boolean,
+    /**
+     * 서버가 택시(배차) 기능을 끈 상태 — 기사 API 가 전부 404 라 영업 시작이 성공할 수 없다.
+     * 눌러도 실패할 CTA 를 열어 두면 기사가 비밀번호·네트워크를 의심하며 반복하게 되므로
+     * 배너로 원인을 알리고 CTA 를 닫는다. 「새로 고침」으로 서버 복구를 바로 반영할 수 있다.
+     */
+    taxiServiceDisabled: Boolean,
     onStartDuty: () -> Unit,
     onOpenAppSettings: () -> Unit,
+    /** 서버 상태 재확인 — 홈 전체 재조회 (배너·CTA 가 함께 풀린다) */
+    onReloadHome: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -104,8 +112,17 @@ internal fun HomeOffDutyScreen(
         }
 
         // 공통 규칙: 화면 단위 오류는 CTA 위 배너.
-        // 권한 거부가 먼저다 — 권한이 없으면 영업 시작 자체를 시도하지 않으므로 실패 문구는 뜨지 않는다.
-        if (locationPermissionRejected) {
+        // 서버 기능 비활성이 가장 앞이다 — 기사가 할 수 있는 일이 없는 상태이고, 그 밑의 권한·실패
+        // 문구는 모두 "영업을 시작해 보려는" 전제에서 나오는데 그 전제 자체가 성립하지 않는다.
+        // 그다음이 권한 거부다 — 권한이 없으면 영업 시작 자체를 시도하지 않으므로 실패 문구는 뜨지 않는다.
+        if (taxiServiceDisabled) {
+            HomeNotice(
+                kind = NoticeKind.ERROR,
+                text = "서버에서 기사 기능이 꺼져 있어요 · 지금은 콜을 받을 수 없어요",
+                actionText = "서버 상태 새로 고침",
+                onAction = onReloadHome,
+            )
+        } else if (locationPermissionRejected) {
             HomeNotice(
                 kind = NoticeKind.ERROR,
                 text = "위치 권한을 허용해야 영업을 시작할 수 있어요",
@@ -119,6 +136,7 @@ internal fun HomeOffDutyScreen(
         PrimaryCtaButton(
             text = "영업 시작하기",
             onClick = onStartDuty,
+            enabled = !taxiServiceDisabled,
             loading = startingDuty,
             modifier = Modifier.height(68.dp),
         )
